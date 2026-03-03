@@ -64,7 +64,7 @@ If no filter is configured, the default behaviour is TX-only.
 ## 2. Initialise
 
 ```cpp
-MSM_CAN::init(GPIO_NUM_5, GPIO_NUM_4);
+MSM_CAN::init(RX_GPIO, TX_GPIO);
 ```
 
 Initialisation performs:
