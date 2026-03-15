@@ -55,7 +55,10 @@ extern "C" void app_main(void)                                                  
 
     MSM_CAN::pack_u16(tx_data, 0, (uint16_t)((last_msg1[0] << 8) | last_msg1[1]));      //using helper packer functions load the tx data 
     MSM_CAN::pack_u16(tx_data, 2, (uint16_t)((last_msg2[0] << 8) | last_msg2[1]));
-    MSM_CAN::pack_u16(tx_data, 4, (uint16_t)((last_msg3[0] << 8) | last_msg3[1]));      
+
+    // example using the unpacking helper function
+    // instead of MSM_CAN::pack_u16(tx_data, 4, (uint16_t)((last_msg3[0] << 8) | last_msg3[1]));   
+    MSM_CAN::pack_u16(tx_data, 4, MSM_CAN::unpack_u16(last_msg3, 0));   
     
     //note there is space to pack 1 more u16 in, but in this implementation its left empty (we set them to 0 earlier using MSM_CAN::clear_payload)                                                                            
     

@@ -26,8 +26,7 @@ This library:
 - Provides safe callback-based reception
 - Protects internal state with a mutex
 - Avoids dynamic memory allocation
-
-For now signal packing/unpacking is the responsibility of the application.
+- Provides header-only big-endian packing and unpacking helpers
 
 ---
 
@@ -200,10 +199,22 @@ pack_u16(data, index, value);
 pack_u32(data, index, value);
 ```
 
+### Unpacking Helpers (Big Endian)
+
+```cpp
+unpack_u16(data, offset);
+unpack_i16(data, offset);
+unpack_u32(data, offset);
+unpack_float(data, offset);
+```
+
+> **_NOTE:_** `float` decoding assumes IEEE-754 single precision
+
 ### Bit Manipulation
 
 ```cpp
 set_bit(byte, bit_position, true_or_false);
+check_flag(data, byte, bit_position);
 ```
 
 ### Payload Utility
@@ -245,6 +256,5 @@ ESP_ERROR_CHECK(...)
 
 - get() function that returns most recent received packet
 - schedule() that schedules a packet to be sent every x seconds
-- unpack() helper functions 
 
 
