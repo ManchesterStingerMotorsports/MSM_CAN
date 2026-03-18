@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 #include "esp_err.h"
 #include "driver/gpio.h" 
 
@@ -42,6 +43,45 @@ namespace MSM_CAN
         if (index > 7) return;
 
         data[index] = value;
+    }
+
+    inline uint16_t unpack_u16(const uint8_t data[8], uint8_t index)                // helper function to unpack uint8_t data[8] with a big-endian encoded uint16_t
+    {
+        if (data == nullptr || index > 6) return 0;
+
+        return static_cast<uint16_t>(
+            (static_cast<uint16_t>(data[index + 0]) << 8) |
+            (static_cast<uint16_t>(data[index + 1]) << 0));                         // the <<0 is just for stylistic consistency
+    }
+
+    inline int16_t unpack_i16(const uint8_t data[8], uint8_t index)                 // helper function to unpack uint8_t data[8] with a big-endian encoded int16_t
+    {
+        return static_cast<int16_t>(unpack_u16(data, index));
+    }
+
+    inline uint32_t unpack_u32(const uint8_t data[8], uint8_t index)                // helper function to unpack uint8_t data[8] with a big-endian encoded uint32_t
+    {
+        if (data == nullptr || index > 4) return 0;
+
+        return (static_cast<uint32_t>(data[index + 0]) << 24) |
+               (static_cast<uint32_t>(data[index + 1]) << 16) |
+               (static_cast<uint32_t>(data[index + 2]) << 8)  |
+               (static_cast<uint32_t>(data[index + 3]) << 0);
+    }
+
+    inline float unpack_float(const uint8_t data[8], uint8_t index)                 // helper function to unpack uint8_t data[8] with a big-endian encoded float
+    {
+        const uint32_t bits = unpack_u32(data, index);
+        float value = 0.0f;
+        memcpy(&value, &bits, sizeof(value));                                        // safer than using pointer casts
+        return value;
+    }
+
+    inline bool check_flag(const uint8_t data[8], uint8_t byte, uint8_t bit)            // helper function to check flag bits in payload data (bit 0 is LSB)
+    {
+        if (byte > 7 || bit > 7) return false;
+
+        return ((data[byte] >> bit) & 0x1u) != 0u;
     }
     
 
