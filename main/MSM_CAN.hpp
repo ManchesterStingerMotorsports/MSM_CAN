@@ -11,6 +11,16 @@ namespace MSM_CAN
     esp_err_t init(gpio_num_t rx_gpio, gpio_num_t tx_gpio);  
 
     esp_err_t send_msg(uint16_t id, const uint8_t data[8]);
+
+   
+    esp_err_t schedule(uint16_t id, const uint8_t data[8], uint32_t period_ms);         //schedules a packet of a certain id to be sent every period_ms
+    
+    esp_err_t update_scheduled_payload(uint16_t id,                                     //updates the packet for the scheduled id
+                                        const uint8_t data[8]);
+    
+    esp_err_t unschedule(uint16_t id);                                                  //unschedule              
+
+
     esp_err_t subscribe(uint16_t id,
                         void (*callback)(uint16_t id, const uint8_t data[8], uint32_t timestamp) = nullptr);
     esp_err_t unsubscribe(uint16_t id);
