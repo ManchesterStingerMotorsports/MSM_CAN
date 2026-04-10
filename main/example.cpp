@@ -1,69 +1,80 @@
 #include "MSM_CAN.hpp"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_log.h"
 
+static const char *TAG = "MSM_CAN_EXAMPLE";
 
-//test
-static volatile bool got_msg1 = false;
-static volatile bool got_msg2 = false;
-static volatile bool got_msg3 = false;
+static volatile bool saw_msg_200 = false;
+static uint8_t last_msg_200[8];
+static volatile uint16_t latest_rx_value = 0;
+static volatile uint32_t latest_rx_timestamp = 0;
 
-static uint8_t last_msg1[8];
-static uint8_t last_msg2[8];
-static uint8_t last_msg3[8];
-
-static void can_callback(uint16_t id,                                                   //example callback function you want to run when you receive a frame you are subscribed to
-                         const uint8_t data[8],                                         //for simplicity all ids share the same callback in this implementation but 
-                         uint32_t timestamp)                                            //if you wanted to you could have a unique callback for each ID
+static void can_callback(uint16_t id,
+                         const uint8_t data[8],
+                         uint32_t timestamp)
 {
-    if (id == 0x200)
+    if (id != 0x200)
     {
-        for (int i = 0; i < 8; i++) last_msg1[i] = data[i];
-        got_msg1 = true;
+        return;
     }
 
-    if (id == 0x201)
+    for (int i = 0; i < 8; i++)
     {
-        for (int i = 0; i < 8; i++) last_msg2[i] = data[i];
-        got_msg2 = true;
+        last_msg_200[i] = data[i];
     }
 
-    if (id == 0x202)
-    {
-        for (int i = 0; i < 8; i++) last_msg3[i] = data[i];
-        got_msg3 = true;
-    }
+    latest_rx_timestamp = timestamp;
+    saw_msg_200 = true;
 }
 
-extern "C" void app_main(void)                                                          //main function (entry point for program)
+extern "C" void app_main(void)
 {
-    MSM_CAN::set_hardware_filters(0x200, 0x202);                                        //Set range of IDs you want to listen to 
+    // Listen for one incoming ID and initialise the CAN driver.
+    MSM_CAN::set_hardware_filters(0x200);
+    MSM_CAN::init(GPIO_NUM_5, GPIO_NUM_4);
+    MSM_CAN::subscribe(0x200, can_callback);
 
-    MSM_CAN::init(GPIO_NUM_5, GPIO_NUM_4);                                              //initiate CAN on your GPIO pins
-
-    MSM_CAN::subscribe(0x200, can_callback);                                            //subscribe to the CAN IDs you want to listen to.  
-    MSM_CAN::subscribe(0x201, can_callback);
-    MSM_CAN::subscribe(0x202, can_callback);
-
-    while (!(got_msg1 && got_msg2 && got_msg3))                                         //in this particular implementation we wait until we receive all messages THEN we formulate a reply
-    {                                                                          
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-
-    uint8_t tx_data[8];                                                                 //declare data struct
+    // Send a simple one-shot frame.
+    uint8_t tx_data[8];
     MSM_CAN::clear_payload(tx_data);
 
-    MSM_CAN::pack_u16(tx_data, 0, (uint16_t)((last_msg1[0] << 8) | last_msg1[1]));      //using helper packer functions load the tx data 
-    MSM_CAN::pack_u16(tx_data, 2, (uint16_t)((last_msg2[0] << 8) | last_msg2[1]));
+    // Example of the helper pack functions for building a payload.
+    MSM_CAN::pack_u16(tx_data, 0, 0x1234);
+    MSM_CAN::pack_u16(tx_data, 2, 0x5678);
+    MSM_CAN::pack_u8(tx_data, 4, 0x9A);
 
-    // example using the unpacking helper function
-    // instead of MSM_CAN::pack_u16(tx_data, 4, (uint16_t)((last_msg3[0] << 8) | last_msg3[1]));   
-    MSM_CAN::pack_u16(tx_data, 4, MSM_CAN::unpack_u16(last_msg3, 0));   
-    
-    //note there is space to pack 1 more u16 in, but in this implementation its left empty (we set them to 0 earlier using MSM_CAN::clear_payload)                                                                            
-    
-    MSM_CAN::send_msg(0x500, tx_data);                                                  //send out message
+    MSM_CAN::send_msg(0x500, tx_data);
 
+    // Example of the helper unpack functions for reading data back out.
+    const uint16_t first_word = MSM_CAN::unpack_u16(tx_data, 0);
+    const uint16_t second_word = MSM_CAN::unpack_u16(tx_data, 2);
+    ESP_LOGI(TAG, "One-shot payload words: 0x%04X 0x%04X", first_word, second_word);
+
+    // Schedule a second frame to go out every 100 ms.
+    uint8_t periodic_data[8];
+    MSM_CAN::clear_payload(periodic_data);
+    MSM_CAN::pack_u16(periodic_data, 0, 0xAA55);
+    MSM_CAN::pack_u16(periodic_data, 2, 0x0102);
+    MSM_CAN::schedule(0x501, periodic_data, 100);
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // Update the scheduled payload without changing its period.
+    MSM_CAN::clear_payload(periodic_data);
+    MSM_CAN::pack_u16(periodic_data, 0, 0xCC33);
+    MSM_CAN::pack_u16(periodic_data, 2, 0x0405);
+    MSM_CAN::update_scheduled_payload(0x501, periodic_data);
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // Stop the periodic transmit.
+    MSM_CAN::unschedule(0x501);
+
+    // Nothing else is required here. The example has already shown one-shot TX,
+    // scheduled TX, payload updates, un-scheduling, RX subscription, and the
+    // pack/unpack helpers, so we just keep the task alive.
     while (true)
     {
         vTaskDelay(pdMS_TO_TICKS(1000));

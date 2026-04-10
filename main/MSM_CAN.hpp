@@ -10,15 +10,22 @@ namespace MSM_CAN
 {
     esp_err_t init(gpio_num_t rx_gpio, gpio_num_t tx_gpio);  
 
+    // Queue a one-shot transmit and wait for the TX task to report the result.
+    // This remains a blocking API from the caller's point of view.
     esp_err_t send_msg(uint16_t id, const uint8_t data[8]);
 
    
-    esp_err_t schedule(uint16_t id, const uint8_t data[8], uint32_t period_ms);         //schedules a packet of a certain id to be sent every period_ms
+    // Schedule a frame to be sent periodically by the background TX task.
+    // Re-scheduling the same ID updates its payload/period and restarts its timing.
+    esp_err_t schedule(uint16_t id, const uint8_t data[8], uint32_t period_ms);
     
-    esp_err_t update_scheduled_payload(uint16_t id,                                     //updates the packet for the scheduled id
+    // Update only the stored payload for a scheduled ID.
+    // The existing schedule phase and period are left unchanged.
+    esp_err_t update_scheduled_payload(uint16_t id,
                                         const uint8_t data[8]);
     
-    esp_err_t unschedule(uint16_t id);                                                  //unschedule              
+    // Remove a scheduled transmit entry for the given ID.
+    esp_err_t unschedule(uint16_t id);
 
 
     esp_err_t subscribe(uint16_t id,
