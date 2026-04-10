@@ -21,10 +21,11 @@ This library is intentionally strict. Much of the Bus Configuration is defined b
 This library:
 
 - Transmits and receives raw `uint8_t[8]` payloads
+- Supports periodic scheduled transmission
 - Enforces TX ID ranges
 - Manages hardware filtering
 - Provides safe callback-based reception
-- Protects internal state with a mutex
+- Protects internal state with FreeRTOS mutexes
 - Avoids dynamic memory allocation
 - Provides header-only big-endian packing and unpacking helpers
 
@@ -35,12 +36,14 @@ This library:
 The system consists of:
 
 - A fixed-size subscription table (no heap usage)
+- A fixed-size scheduled TX table (no heap usage)
 - A FreeRTOS RX task
-- A mutex protecting subscription state
+- A FreeRTOS TX task
+- Mutexes protecting subscription and schedule state
 - Hardware mask filtering via TWAI
 - Strict TX ID range enforcement
 
-All reception is callback-driven.
+Reception is callback-driven. Transmission is serialised through the TX task.
 
 ---
 
@@ -72,7 +75,9 @@ Initialisation performs:
 - Hardware filter application
 - Node enable
 - RX task creation
+- TX task creation
 - Subscription mutex creation
+- Schedule mutex creation
 
 Calling `init()` twice returns `ESP_ERR_INVALID_STATE`.
 
@@ -118,7 +123,15 @@ Transmission rules:
 - ID must be within allowed TX ranges
 - Payload must be exactly 8 bytes
 - Encoding is big-endian
-- Transmission blocks until complete
+- `send_msg()` blocks until the TX task has completed the transmit request
+
+Periodic transmit helpers:
+
+```cpp
+MSM_CAN::schedule(0x501, payload, 100);             // send every 100 ms
+MSM_CAN::update_scheduled_payload(0x501, payload);  // update payload only
+MSM_CAN::unschedule(0x501);                         // stop periodic transmit
+```
 
 ---
 
@@ -171,12 +184,15 @@ No dynamic allocation occurs in the RX path.
 
 # Thread Safety
 
-The subscription table is protected by a FreeRTOS mutex.
+The subscription and scheduled-TX tables are protected by FreeRTOS mutexes.
 
 Protected operations:
 
 - `subscribe()`
 - `unsubscribe()`
+- `schedule()`
+- `update_scheduled_payload()`
+- `unschedule()`
 - RX callback lookup
 
 The mutex is never held while executing user callbacks.
@@ -255,6 +271,5 @@ ESP_ERROR_CHECK(...)
 # Planned Future Additions
 
 - get() function that returns most recent received packet
-- schedule() that schedules a packet to be sent every x seconds
 
 
