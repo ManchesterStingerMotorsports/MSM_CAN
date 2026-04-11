@@ -25,6 +25,7 @@ This library:
 - Enforces TX ID ranges
 - Manages hardware filtering
 - Provides safe callback-based reception
+- Caches the latest received packet per subscribed ID
 - Protects internal state with FreeRTOS mutexes
 - Avoids dynamic memory allocation
 - Provides header-only big-endian packing and unpacking helpers
@@ -43,7 +44,7 @@ The system consists of:
 - Hardware mask filtering via TWAI
 - Strict TX ID range enforcement
 
-Reception is callback-driven. Transmission is serialised through the TX task.
+Reception is callback-driven, with optional polling via `get()`. Transmission is serialised through the TX task.
 
 ---
 
@@ -87,6 +88,7 @@ Calling `init()` twice returns `ESP_ERR_INVALID_STATE`.
 
 ```cpp
 MSM_CAN::subscribe(0x200, my_callback);
+MSM_CAN::subscribe(0x201); // optional callback-free subscription
 ```
 
 Callback signature:
@@ -105,6 +107,25 @@ Rules:
 - Always receives exactly 8 bytes
 
 If the ID does not pass hardware filtering, `subscribe()` returns `ESP_ERR_INVALID_ARG`.
+
+You can also poll the latest cached packet for any subscribed ID:
+
+```cpp
+uint8_t data[8];
+uint32_t timestamp_ms = 0;
+
+esp_err_t err = MSM_CAN::get(0x200, data, &timestamp_ms);
+if (err == ESP_OK)
+{
+    // data/timestamp_ms now contain the most recent received frame
+}
+```
+
+`get()` returns:
+
+- `ESP_OK` if a cached packet is available
+- `ESP_ERR_NOT_FOUND` if the ID is not subscribed or no packet has been received yet
+- `ESP_ERR_INVALID_ARG` if the arguments are invalid
 
 ---
 
@@ -174,6 +195,7 @@ RX task behaviour:
 - Rejects non-8-byte frames
 - Copies payload to local buffer
 - Locks subscription table
+- Updates cached packet/timestamp for the subscription
 - Copies callback pointer
 - Unlocks
 - Executes callback outside the lock
@@ -190,6 +212,7 @@ Protected operations:
 
 - `subscribe()`
 - `unsubscribe()`
+- `get()`
 - `schedule()`
 - `update_scheduled_payload()`
 - `unschedule()`
@@ -270,6 +293,6 @@ ESP_ERROR_CHECK(...)
 
 # Planned Future Additions
 
-- get() function that returns most recent received packet
+- Additional RX convenience helpers as needed
 
 
