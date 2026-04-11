@@ -25,6 +25,7 @@ static void can_callback(uint16_t id,
         last_msg_200[i] = data[i];
     }
 
+    latest_rx_value = MSM_CAN::unpack_u16(data, 0);
     latest_rx_timestamp = timestamp;
     saw_msg_200 = true;
 }
@@ -35,6 +36,10 @@ extern "C" void app_main(void)
     MSM_CAN::set_hardware_filters(0x200);
     MSM_CAN::init(GPIO_NUM_5, GPIO_NUM_4);
     MSM_CAN::subscribe(0x200, can_callback);
+
+    // A subscription can also be callback-free. The latest packet is cached
+    // internally and can be polled with MSM_CAN::get().
+    MSM_CAN::subscribe(0x201);
 
     // Send a simple one-shot frame.
     uint8_t tx_data[8];
@@ -68,6 +73,16 @@ extern "C" void app_main(void)
     MSM_CAN::update_scheduled_payload(0x501, periodic_data);
 
     vTaskDelay(pdMS_TO_TICKS(500));
+
+    uint8_t cached_data[8];
+    uint32_t cached_timestamp = 0;
+    if (MSM_CAN::get(0x200, cached_data, &cached_timestamp) == ESP_OK)
+    {
+        ESP_LOGI(TAG,
+                 "Cached RX for 0x200: value=%u timestamp=%lu",
+                 static_cast<unsigned>(MSM_CAN::unpack_u16(cached_data, 0)),
+                 static_cast<unsigned long>(cached_timestamp));
+    }
 
     // Stop the periodic transmit.
     MSM_CAN::unschedule(0x501);

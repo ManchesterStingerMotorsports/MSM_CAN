@@ -28,7 +28,10 @@ namespace MSM_CAN
     struct SubEntry
     {
         bool in_use;
+        bool has_last_packet;
         uint16_t id;
+        uint8_t last_packet[8];
+        uint32_t last_timestamp_ms;
         void (*callback)(uint16_t,
                          const uint8_t[8],
                          uint32_t);
@@ -301,6 +304,9 @@ namespace MSM_CAN
                 const int idx = find_sub_index(pkt.id);
                 if (idx >= 0)
                 {
+                    copy_payload(g_subs[idx].last_packet, pkt.data);
+                    g_subs[idx].last_timestamp_ms = ts;
+                    g_subs[idx].has_last_packet = true;
                     cb = g_subs[idx].callback;
                 }
                 xSemaphoreGive(g_subs_mutex);
@@ -624,7 +630,10 @@ namespace MSM_CAN
         for (int i = 0; i < MAX_SUBS; i++)
         {
             g_subs[i].in_use = false;
+            g_subs[i].has_last_packet = false;
             g_subs[i].id = 0;
+            clear_payload(g_subs[i].last_packet);
+            g_subs[i].last_timestamp_ms = 0;
             g_subs[i].callback = nullptr;
         }
 
@@ -873,7 +882,10 @@ namespace MSM_CAN
         }
 
         g_subs[slot].in_use = true;
+        g_subs[slot].has_last_packet = false;
         g_subs[slot].id = id;
+        clear_payload(g_subs[slot].last_packet);
+        g_subs[slot].last_timestamp_ms = 0;
         g_subs[slot].callback = callback;
 
         xSemaphoreGive(g_subs_mutex);
@@ -910,8 +922,50 @@ namespace MSM_CAN
         }
 
         g_subs[idx].in_use = false;
+        g_subs[idx].has_last_packet = false;
         g_subs[idx].id = 0;
+        clear_payload(g_subs[idx].last_packet);
+        g_subs[idx].last_timestamp_ms = 0;
         g_subs[idx].callback = nullptr;
+
+        xSemaphoreGive(g_subs_mutex);
+        return ESP_OK;
+    }
+
+    esp_err_t get(uint16_t id, uint8_t data_out[8], uint32_t *timestamp_ms)
+    {
+        if (!g_initialised)
+        {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        if (id > 0x7FFu || data_out == nullptr)
+        {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        if (g_subs_mutex == nullptr)
+        {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        if (xSemaphoreTake(g_subs_mutex, portMAX_DELAY) != pdTRUE)
+        {
+            return ESP_FAIL;
+        }
+
+        const int idx = find_sub_index(id);
+        if (idx < 0 || !g_subs[idx].has_last_packet)
+        {
+            xSemaphoreGive(g_subs_mutex);
+            return ESP_ERR_NOT_FOUND;
+        }
+
+        copy_payload(data_out, g_subs[idx].last_packet);
+        if (timestamp_ms != nullptr)
+        {
+            *timestamp_ms = g_subs[idx].last_timestamp_ms;
+        }
 
         xSemaphoreGive(g_subs_mutex);
         return ESP_OK;

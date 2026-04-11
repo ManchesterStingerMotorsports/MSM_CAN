@@ -31,6 +31,7 @@ namespace MSM_CAN
     esp_err_t subscribe(uint16_t id,
                         void (*callback)(uint16_t id, const uint8_t data[8], uint32_t timestamp) = nullptr);
     esp_err_t unsubscribe(uint16_t id);
+    esp_err_t get(uint16_t id, uint8_t data_out[8], uint32_t *timestamp_ms = nullptr);
 
     void set_hardware_filters();
     void set_hardware_filters(uint32_t id);
