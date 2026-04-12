@@ -63,6 +63,13 @@ namespace MSM_CAN
         data[index] = value;
     }
 
+    inline void pack_float(uint8_t data[8], uint8_t index, float value)                  // helper function to pack uint8_t data[8] with a big-endian encoded float
+    {
+        uint32_t bits = 0;
+        memcpy(&bits, &value, sizeof(bits));
+        pack_u32(data, index, bits);
+    }
+
     inline uint16_t unpack_u16(const uint8_t data[8], uint8_t index)                // helper function to unpack uint8_t data[8] with a big-endian encoded uint16_t
     {
         if (data == nullptr || index > 6) return 0;

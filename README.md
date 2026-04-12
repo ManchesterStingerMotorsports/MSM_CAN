@@ -44,7 +44,7 @@ The system consists of:
 - Hardware mask filtering via TWAI
 - Strict TX ID range enforcement
 
-Reception is callback-driven, with optional polling via `get()`. Transmission is serialised through the TX task.
+
 
 ---
 
@@ -88,10 +88,10 @@ Calling `init()` twice returns `ESP_ERR_INVALID_STATE`.
 
 ```cpp
 MSM_CAN::subscribe(0x200, my_callback);
-MSM_CAN::subscribe(0x201); // optional callback-free subscription
+MSM_CAN::subscribe(0x201); // callback optional
 ```
 
-Callback signature:
+Callback signature, if used:
 
 ```cpp
 void my_callback(uint16_t id,
@@ -108,7 +108,7 @@ Rules:
 
 If the ID does not pass hardware filtering, `subscribe()` returns `ESP_ERR_INVALID_ARG`.
 
-You can also poll the latest cached packet for any subscribed ID:
+For polling-only users, each subscribed ID also caches its most recent received frame:
 
 ```cpp
 uint8_t data[8];
@@ -117,7 +117,7 @@ uint32_t timestamp_ms = 0;
 esp_err_t err = MSM_CAN::get(0x200, data, &timestamp_ms);
 if (err == ESP_OK)
 {
-    // data/timestamp_ms now contain the most recent received frame
+    // data / timestamp_ms contain the most recently received packet
 }
 ```
 
@@ -195,10 +195,10 @@ RX task behaviour:
 - Rejects non-8-byte frames
 - Copies payload to local buffer
 - Locks subscription table
-- Updates cached packet/timestamp for the subscription
+- Updates cached packet/timestamp for the matching subscribed ID
 - Copies callback pointer
 - Unlocks
-- Executes callback outside the lock
+- Executes callback outside the lock if one was provided
 
 No dynamic allocation occurs in the RX path.
 
@@ -236,6 +236,7 @@ This prevents:
 pack_u8(data, index, value);
 pack_u16(data, index, value);
 pack_u32(data, index, value);
+pack_float(data, index, value);
 ```
 
 ### Unpacking Helpers (Big Endian)
@@ -288,11 +289,5 @@ ESP_ERROR_CHECK(...)
 - DLC must be 8
 - Hardware filters must be configured before init
 - RX callbacks must be fast and non-blocking
-
----
-
-# Planned Future Additions
-
-- Additional RX convenience helpers as needed
 
 
