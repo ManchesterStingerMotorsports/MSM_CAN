@@ -234,7 +234,9 @@ This prevents:
 
 ```cpp
 pack_u8(data, index, value);
+pack_i8(data, index, value);
 pack_u16(data, index, value);
+pack_i16(data, index, value);
 pack_u32(data, index, value);
 pack_float(data, index, value);
 ```
@@ -242,10 +244,12 @@ pack_float(data, index, value);
 ### Unpacking Helpers (Big Endian)
 
 ```cpp
-unpack_u16(data, offset);
-unpack_i16(data, offset);
-unpack_u32(data, offset);
-unpack_float(data, offset);
+unpack_u8(data, index);
+unpack_i8(data, index);
+unpack_u16(data, index);
+unpack_i16(data, index);
+unpack_u32(data, index);
+unpack_float(data, index);
 ```
 
 > **_NOTE:_** `float` decoding assumes IEEE-754 single precision
