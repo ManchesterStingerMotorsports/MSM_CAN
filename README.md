@@ -1,8 +1,8 @@
-# MSM_CAN - Manchester Stinger Motorsports CAN Library
+# ESP_CAN - TWAI Driver for ESP32 
 
 Classic CAN 2.0 library for ESP32 (ESP-IDF, TWAI on-chip driver).
 
-Designed for Manchester Stinger Motorsports by James Platt 
+Originally designed for Manchester Stinger Motorsports by James Platt 
 
 ---
 
@@ -13,7 +13,7 @@ Designed for Manchester Stinger Motorsports by James Platt
 - Identifier: **11-bit standard IDs only**
 - Payload length: **Always 8 bytes (DLC = 8)**
 
-This library is intentionally strict. Much of the Bus Configuration is defined by the Haltech Elite 1500 ECU.
+This library is intentionally strict.
 ---
 
 # Design Philosophy
@@ -158,7 +158,7 @@ MSM_CAN::unschedule(0x501);                         // stop periodic transmit
 
 # Transmission Policy
 
-Allowed TX ID ranges:
+Allowed TX ID ranges (these can be modified in MSM_CAN.cpp, in future an API to edit them will be created):
 
 ```
 0x100 - 0x1FF
