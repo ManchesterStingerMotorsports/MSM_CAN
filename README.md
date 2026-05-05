@@ -1,8 +1,8 @@
-# ESP_CAN - TWAI Driver for ESP32 
+# MSM_CAN - TWAI Driver for ESP32 
 
 Classic CAN 2.0 library for ESP32 (ESP-IDF, TWAI on-chip driver).
 
-Originally designed for Manchester Stinger Motorsports by James Platt 
+Designed for Manchester Stinger Motorsports by James Platt 
 
 ---
 
