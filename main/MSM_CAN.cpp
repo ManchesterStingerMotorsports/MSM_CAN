@@ -932,7 +932,7 @@ namespace MSM_CAN
         return ESP_OK;
     }
 
-    esp_err_t get(uint16_t id, uint8_t data_out[8], uint32_t *timestamp_ms)
+    recieved_packet get(uint16_t id)
     {
         if (!g_initialised)
         {
@@ -961,14 +961,12 @@ namespace MSM_CAN
             return ESP_ERR_NOT_FOUND;
         }
 
-        copy_payload(data_out, g_subs[idx].last_packet);
-        if (timestamp_ms != nullptr)
-        {
-            *timestamp_ms = g_subs[idx].last_timestamp_ms;
-        }
-
+        received_packet packet = {};
+        packet.timestamp = g_subs[idx].last_timestamp_ms;
+        packet.data = g_subs[idx].last_packet;
+                
         xSemaphoreGive(g_subs_mutex);
-        return ESP_OK;
+        return packet;
     }
 
 }

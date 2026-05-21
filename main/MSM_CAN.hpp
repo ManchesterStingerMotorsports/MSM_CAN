@@ -8,6 +8,11 @@
 
 namespace MSM_CAN
 {
+    struct{
+        uint8_t data[8];
+        uint32_t timestamp;
+    }recieved_packet;
+
     esp_err_t init(gpio_num_t rx_gpio, gpio_num_t tx_gpio);  
 
     // Queue a one-shot transmit and wait for the TX task to report the result.
@@ -31,7 +36,8 @@ namespace MSM_CAN
     esp_err_t subscribe(uint16_t id,
                         void (*callback)(uint16_t id, const uint8_t data[8], uint32_t timestamp) = nullptr);
     esp_err_t unsubscribe(uint16_t id);
-    esp_err_t get(uint16_t id, uint8_t data_out[8], uint32_t *timestamp_ms = nullptr);
+    
+    received_packet get(uint16_t id);
 
     void set_hardware_filters();
     void set_hardware_filters(uint32_t id);

@@ -18,6 +18,13 @@ This library is intentionally strict.
 
 # Design Philosophy
 
+The impressive thing about this library is not how complicated it is, how clever
+the internals are, or how many lines of code it contains. The point is the
+opposite: it makes CAN usage simple.
+
+> "An idiot admires complexity; A genius admires simplicity"  
+> - Terry A. Davis
+
 This library:
 
 - Transmits and receives raw `uint8_t[8]` payloads
