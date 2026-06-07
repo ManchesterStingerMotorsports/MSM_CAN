@@ -67,7 +67,6 @@ namespace MSM_CAN
         esp_err_t *result_ptr;
     };
 
-    static constexpr int MAX_SUBS = 64;
     static constexpr int MAX_SCHEDULED = 32;
 
     static constexpr size_t RX_QUEUE_DEPTH = 32;
@@ -95,7 +94,7 @@ namespace MSM_CAN
     static SemaphoreHandle_t g_subs_mutex = nullptr;
     static SemaphoreHandle_t g_sched_mutex = nullptr;
 
-    static SubEntry g_subs[MAX_SUBS];
+    static SubEntry g_subs[MSM_CAN_MAX_SUBS];
     static ScheduledEntry g_sched[MAX_SCHEDULED];
 
     static twai_node_handle_t g_node = nullptr;
@@ -133,7 +132,7 @@ namespace MSM_CAN
 
     static int find_sub_index(uint16_t id)
     {
-        for (int i = 0; i < MAX_SUBS; i++)
+        for (int i = 0; i < MSM_CAN_MAX_SUBS; i++)
         {
             if (g_subs[i].in_use && g_subs[i].id == id)
             {
@@ -145,7 +144,7 @@ namespace MSM_CAN
 
     static int find_free_sub_slot()
     {
-        for (int i = 0; i < MAX_SUBS; i++)
+        for (int i = 0; i < MSM_CAN_MAX_SUBS; i++)
         {
             if (!g_subs[i].in_use)
             {
@@ -627,7 +626,7 @@ namespace MSM_CAN
             return ESP_ERR_NO_MEM;
         }
 
-        for (int i = 0; i < MAX_SUBS; i++)
+        for (int i = 0; i < MSM_CAN_MAX_SUBS; i++)
         {
             g_subs[i].in_use = false;
             g_subs[i].has_last_packet = false;
@@ -932,38 +931,40 @@ namespace MSM_CAN
         return ESP_OK;
     }
 
-    recieved_packet get(uint16_t id)
+    LatestPacket get(uint16_t id)
     {
+        LatestPacket packet = {};
+
         if (!g_initialised)
         {
-            return ESP_ERR_INVALID_STATE;
+            return packet;
         }
 
-        if (id > 0x7FFu || data_out == nullptr)
+        if (id > 0x7FFu)
         {
-            return ESP_ERR_INVALID_ARG;
+            return packet;
         }
 
         if (g_subs_mutex == nullptr)
         {
-            return ESP_ERR_INVALID_STATE;
+            return packet;
         }
 
         if (xSemaphoreTake(g_subs_mutex, portMAX_DELAY) != pdTRUE)
         {
-            return ESP_FAIL;
+            return packet;
         }
 
         const int idx = find_sub_index(id);
         if (idx < 0 || !g_subs[idx].has_last_packet)
         {
             xSemaphoreGive(g_subs_mutex);
-            return ESP_ERR_NOT_FOUND;
+            return packet;
         }
 
-        received_packet packet = {};
-        packet.timestamp = g_subs[idx].last_timestamp_ms;
-        packet.data = g_subs[idx].last_packet;
+        copy_payload(packet.data, g_subs[idx].last_packet);
+        packet.timestamp_ms = g_subs[idx].last_timestamp_ms;
+        packet.has_packet = true;
                 
         xSemaphoreGive(g_subs_mutex);
         return packet;

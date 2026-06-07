@@ -18,13 +18,6 @@ This library is intentionally strict.
 
 # Design Philosophy
 
-The impressive thing about this library is not how complicated it is, how clever
-the internals are, or how many lines of code it contains. The point is the
-opposite: it makes CAN usage simple.
-
-> "An idiot admires complexity; A genius admires simplicity"  
-> - Terry A. Davis
-
 This library:
 
 - Transmits and receives raw `uint8_t[8]` payloads
@@ -34,7 +27,7 @@ This library:
 - Provides safe callback-based reception
 - Caches the latest received packet per subscribed ID
 - Protects internal state with FreeRTOS mutexes
-- Avoids dynamic memory allocation
+- Uses fixed-size subscription and scheduled-TX tables
 - Provides header-only big-endian packing and unpacking helpers
 
 ---
@@ -43,7 +36,7 @@ This library:
 
 The system consists of:
 
-- A fixed-size subscription table (no heap usage)
+- A configurable fixed-size subscription table
 - A fixed-size scheduled TX table (no heap usage)
 - A FreeRTOS RX task
 - A FreeRTOS TX task
@@ -51,7 +44,22 @@ The system consists of:
 - Hardware mask filtering via TWAI
 - Strict TX ID range enforcement
 
+The subscription table defaults to 64 entries. Projects can override this at
+compile time before including the header, or by adding a compiler definition:
 
+```cpp
+#define MSM_CAN_MAX_SUBS 128
+#include "MSM_CAN.hpp"
+```
+
+For ESP-IDF/CMake projects, this can also be supplied as a compile definition:
+
+```cmake
+target_compile_definitions(${COMPONENT_LIB} PUBLIC MSM_CAN_MAX_SUBS=128)
+```
+
+Increasing `MSM_CAN_MAX_SUBS` raises static RAM usage because each subscription
+slot stores callback metadata and one cached 8-byte receive packet.
 
 ---
 
@@ -118,21 +126,19 @@ If the ID does not pass hardware filtering, `subscribe()` returns `ESP_ERR_INVAL
 For polling-only users, each subscribed ID also caches its most recent received frame:
 
 ```cpp
-uint8_t data[8];
-uint32_t timestamp_ms = 0;
-
-esp_err_t err = MSM_CAN::get(0x200, data, &timestamp_ms);
-if (err == ESP_OK)
+MSM_CAN::LatestPacket packet = MSM_CAN::get(0x200);
+if (packet.has_packet)
 {
-    // data / timestamp_ms contain the most recently received packet
+    uint16_t value = MSM_CAN::unpack_u16(packet.data, 0);
+    uint32_t timestamp_ms = packet.timestamp_ms;
 }
 ```
 
-`get()` returns:
+`get()` returns a zeroed `LatestPacket` with `has_packet == false` when the
+driver is not initialised, the ID is invalid, the ID is not subscribed, or no
+packet has been received yet.
 
-- `ESP_OK` if a cached packet is available
-- `ESP_ERR_NOT_FOUND` if the ID is not subscribed or no packet has been received yet
-- `ESP_ERR_INVALID_ARG` if the arguments are invalid
+The packet data is copied out of the internal cache before `get()` returns.
 
 ---
 
@@ -280,12 +286,12 @@ clear_payload(data);
 
 Common return values:
 
-- `ESP_ERR_INVALID_STATE` → Called before init or invalid call order
-- `ESP_ERR_INVALID_ARG` → Invalid ID or hardware filter mismatch
-- `ESP_ERR_NO_MEM` → No subscription slots available
-- `ESP_FAIL` → Internal failure
+- `ESP_ERR_INVALID_STATE` -> Called before init or invalid call order
+- `ESP_ERR_INVALID_ARG` -> Invalid ID or hardware filter mismatch
+- `ESP_ERR_NO_MEM` -> No subscription slots available
+- `ESP_FAIL` -> Internal failure
 
-Application code should wrap calls with:
+Application code should wrap `esp_err_t`-returning calls with:
 
 ```cpp
 ESP_ERROR_CHECK(...)

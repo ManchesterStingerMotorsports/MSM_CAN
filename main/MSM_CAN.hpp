@@ -6,12 +6,18 @@
 #include "esp_err.h"
 #include "driver/gpio.h" 
 
+#ifndef MSM_CAN_MAX_SUBS
+#define MSM_CAN_MAX_SUBS 64
+#endif
+
 namespace MSM_CAN
 {
-    struct{
+    struct LatestPacket
+    {
         uint8_t data[8];
-        uint32_t timestamp;
-    }recieved_packet;
+        uint32_t timestamp_ms;
+        bool has_packet;
+    };
 
     esp_err_t init(gpio_num_t rx_gpio, gpio_num_t tx_gpio);  
 
@@ -37,7 +43,7 @@ namespace MSM_CAN
                         void (*callback)(uint16_t id, const uint8_t data[8], uint32_t timestamp) = nullptr);
     esp_err_t unsubscribe(uint16_t id);
     
-    received_packet get(uint16_t id);
+    LatestPacket get(uint16_t id);
 
     void set_hardware_filters();
     void set_hardware_filters(uint32_t id);
@@ -67,7 +73,7 @@ namespace MSM_CAN
         data[index + 3] = static_cast<uint8_t>((value >> 0)  & 0xFF);
     }
 
-    inline void pack_u8(uint8_t data[8], uint8_t index, uint8_t value)                  //by all means useless but might make more sense to minions / make code slightly more legible
+    inline void pack_u8(uint8_t data[8], uint8_t index, uint8_t value)                  // helper function to pack uint8_t data[8] with a uint8_t
     {
         if (index > 7) return;
 
