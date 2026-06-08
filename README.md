@@ -37,29 +37,36 @@ This library:
 The system consists of:
 
 - A configurable fixed-size subscription table
-- A fixed-size scheduled TX table (no heap usage)
+- A configurable fixed-size scheduled TX table (no heap usage)
 - A FreeRTOS RX task
 - A FreeRTOS TX task
 - Mutexes protecting subscription and schedule state
 - Hardware mask filtering via TWAI
 - Strict TX ID range enforcement
 
-The subscription table defaults to 64 entries. Projects can override this at
-compile time before including the header, or by adding a compiler definition:
+The subscription table defaults to 64 entries and the scheduled TX table
+defaults to 32 entries. Projects can override these at compile time before
+including the header, or by adding compiler definitions:
 
 ```cpp
 #define MSM_CAN_MAX_SUBS 128
+#define MSM_CAN_MAX_SCHEDULED_TX 64
 #include "MSM_CAN.hpp"
 ```
 
 For ESP-IDF/CMake projects, this can also be supplied as a compile definition:
 
 ```cmake
-target_compile_definitions(${COMPONENT_LIB} PUBLIC MSM_CAN_MAX_SUBS=128)
+target_compile_definitions(${COMPONENT_LIB} PUBLIC
+    MSM_CAN_MAX_SUBS=128
+    MSM_CAN_MAX_SCHEDULED_TX=64
+)
 ```
 
 Increasing `MSM_CAN_MAX_SUBS` raises static RAM usage because each subscription
-slot stores callback metadata and one cached 8-byte receive packet.
+slot stores callback metadata and one cached 8-byte receive packet. Increasing
+`MSM_CAN_MAX_SCHEDULED_TX` raises static RAM usage because each scheduled TX
+slot stores the ID, payload, period, and next due time.
 
 ---
 

@@ -67,8 +67,6 @@ namespace MSM_CAN
         esp_err_t *result_ptr;
     };
 
-    static constexpr int MAX_SCHEDULED = 32;
-
     static constexpr size_t RX_QUEUE_DEPTH = 32;
     static constexpr size_t TX_CMD_QUEUE_DEPTH = 16;
 
@@ -95,7 +93,7 @@ namespace MSM_CAN
     static SemaphoreHandle_t g_sched_mutex = nullptr;
 
     static SubEntry g_subs[MSM_CAN_MAX_SUBS];
-    static ScheduledEntry g_sched[MAX_SCHEDULED];
+    static ScheduledEntry g_sched[MSM_CAN_MAX_SCHEDULED_TX];
 
     static twai_node_handle_t g_node = nullptr;
 
@@ -156,7 +154,7 @@ namespace MSM_CAN
 
     static int find_sched_index(uint16_t id)
     {
-        for (int i = 0; i < MAX_SCHEDULED; i++)
+        for (int i = 0; i < MSM_CAN_MAX_SCHEDULED_TX; i++)
         {
             if (g_sched[i].in_use && g_sched[i].id == id)
             {
@@ -168,7 +166,7 @@ namespace MSM_CAN
 
     static int find_free_sched_slot()
     {
-        for (int i = 0; i < MAX_SCHEDULED; i++)
+        for (int i = 0; i < MSM_CAN_MAX_SCHEDULED_TX; i++)
         {
             if (!g_sched[i].in_use)
             {
@@ -334,7 +332,7 @@ namespace MSM_CAN
             return 10;
         }
 
-        for (int i = 0; i < MAX_SCHEDULED; i++)
+        for (int i = 0; i < MSM_CAN_MAX_SCHEDULED_TX; i++)
         {
             if (!g_sched[i].in_use)
             {
@@ -375,7 +373,7 @@ namespace MSM_CAN
 
         const uint32_t now = now_ms();
 
-        for (int i = 0; i < MAX_SCHEDULED; i++)
+        for (int i = 0; i < MSM_CAN_MAX_SCHEDULED_TX; i++)
         {
             uint16_t id = 0;
             uint8_t payload[8] = {};
@@ -636,7 +634,7 @@ namespace MSM_CAN
             g_subs[i].callback = nullptr;
         }
 
-        for (int i = 0; i < MAX_SCHEDULED; i++)
+        for (int i = 0; i < MSM_CAN_MAX_SCHEDULED_TX; i++)
         {
             g_sched[i].in_use = false;
             g_sched[i].id = 0;

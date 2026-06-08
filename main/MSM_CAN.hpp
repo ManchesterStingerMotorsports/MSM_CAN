@@ -10,6 +10,10 @@
 #define MSM_CAN_MAX_SUBS 64
 #endif
 
+#ifndef MSM_CAN_MAX_SCHEDULED_TX
+#define MSM_CAN_MAX_SCHEDULED_TX 32
+#endif
+
 namespace MSM_CAN
 {
     struct LatestPacket
