@@ -19,7 +19,7 @@
 namespace MSM_CAN
 {
 
-    struct RxPkt
+    struct RxQueueItem
     {
         uint16_t id;
         uint8_t data[8];
@@ -28,20 +28,16 @@ namespace MSM_CAN
     struct SubEntry
     {
         bool in_use;
-        bool has_last_packet;
+        bool has_last_frame;
         uint16_t id;
-        uint8_t last_packet[8];
-        uint32_t last_timestamp_ms;
-        void (*callback)(uint16_t,
-                         const uint8_t[8],
-                         uint32_t);
+        RxFrame last_frame;
+        RxCallback callback;
     };
 
     struct ScheduledEntry
     {
         bool in_use;
-        uint16_t id;
-        uint8_t data[8];
+        TxFrame frame;
         uint32_t period_ms;
         uint32_t next_due_ms;
     };
@@ -57,8 +53,7 @@ namespace MSM_CAN
     struct TxCmd
     {
         TxCmdType type;
-        uint16_t id;
-        uint8_t data[8];
+        TxFrame frame;
         uint32_t period_ms;
 
         // Public APIs wait on this so they can return the final result
@@ -156,7 +151,7 @@ namespace MSM_CAN
     {
         for (int i = 0; i < MSM_CAN_MAX_SCHEDULED_TX; i++)
         {
-            if (g_sched[i].in_use && g_sched[i].id == id)
+            if (g_sched[i].in_use && g_sched[i].frame.id == id)
             {
                 return i;
             }
@@ -194,7 +189,20 @@ namespace MSM_CAN
         }
     }
 
-    static esp_err_t transmit_frame_blocking(uint16_t id, const uint8_t data[8])
+    static void copy_tx_frame(TxFrame& dst, const TxFrame& src)
+    {
+        dst.id = src.id;
+        copy_payload(dst.data, src.data);
+    }
+
+    static void copy_rx_frame(RxFrame& dst, const RxFrame& src)
+    {
+        dst.id = src.id;
+        copy_payload(dst.data, src.data);
+        dst.timestamp_ms = src.timestamp_ms;
+    }
+
+    static esp_err_t transmit_frame_blocking(const TxFrame& tx_frame)
     {
         if (g_node == nullptr)
         {
@@ -202,10 +210,10 @@ namespace MSM_CAN
         }
 
         uint8_t tx_buf[8];
-        copy_payload(tx_buf, data);
+        copy_payload(tx_buf, tx_frame.data);
 
         twai_frame_t frame = {};
-        frame.header.id = id;
+        frame.header.id = tx_frame.id;
         frame.buffer = tx_buf;
         frame.buffer_len = 8;
 
@@ -258,7 +266,7 @@ namespace MSM_CAN
             return false;
         }
 
-        RxPkt pkt{};
+        RxQueueItem pkt{};
         pkt.id = static_cast<uint16_t>(rx_frame.header.id & 0x7FFu);
         for (int i = 0; i < 8; i++)
         {
@@ -278,7 +286,7 @@ namespace MSM_CAN
     {
         (void)arg;
 
-        RxPkt pkt{};
+        RxQueueItem pkt{};
         for (;;)
         {
             if (g_rx_queue == nullptr)
@@ -292,8 +300,12 @@ namespace MSM_CAN
                 continue;
             }
 
-            const uint32_t ts = now_ms();
-            void (*cb)(uint16_t, const uint8_t[8], uint32_t) = nullptr;
+            RxFrame frame{};
+            frame.id = pkt.id;
+            copy_payload(frame.data, pkt.data);
+            frame.timestamp_ms = now_ms();
+
+            RxCallback cb = nullptr;
 
             if (g_subs_mutex != nullptr &&
                 xSemaphoreTake(g_subs_mutex, portMAX_DELAY) == pdTRUE)
@@ -301,9 +313,8 @@ namespace MSM_CAN
                 const int idx = find_sub_index(pkt.id);
                 if (idx >= 0)
                 {
-                    copy_payload(g_subs[idx].last_packet, pkt.data);
-                    g_subs[idx].last_timestamp_ms = ts;
-                    g_subs[idx].has_last_packet = true;
+                    copy_rx_frame(g_subs[idx].last_frame, frame);
+                    g_subs[idx].has_last_frame = true;
                     cb = g_subs[idx].callback;
                 }
                 xSemaphoreGive(g_subs_mutex);
@@ -311,7 +322,7 @@ namespace MSM_CAN
 
             if (cb != nullptr)
             {
-                cb(pkt.id, pkt.data, ts);
+                cb(frame);
             }
         }
     }
@@ -375,8 +386,7 @@ namespace MSM_CAN
 
         for (int i = 0; i < MSM_CAN_MAX_SCHEDULED_TX; i++)
         {
-            uint16_t id = 0;
-            uint8_t payload[8] = {};
+            TxFrame frame{};
             bool should_send = false;
 
             if (xSemaphoreTake(g_sched_mutex, portMAX_DELAY) != pdTRUE)
@@ -386,8 +396,7 @@ namespace MSM_CAN
 
             if (g_sched[i].in_use && time_reached(now, g_sched[i].next_due_ms))
             {
-                id = g_sched[i].id;
-                copy_payload(payload, g_sched[i].data);
+                copy_tx_frame(frame, g_sched[i].frame);
 
                 // Advance by one period from now so delayed sends do not
                 // generate a burst of catch-up traffic.
@@ -399,7 +408,7 @@ namespace MSM_CAN
 
             if (should_send)
             {
-                (void)transmit_frame_blocking(id, payload);
+                (void)transmit_frame_blocking(frame);
             }
         }
     }
@@ -412,7 +421,7 @@ namespace MSM_CAN
         {
         case TxCmdType::SendNow:
         {
-            result = transmit_frame_blocking(cmd.id, cmd.data);
+            result = transmit_frame_blocking(cmd.frame);
             break;
         }
 
@@ -430,10 +439,10 @@ namespace MSM_CAN
                 break;
             }
 
-            const int existing = find_sched_index(cmd.id);
+            const int existing = find_sched_index(cmd.frame.id);
             if (existing >= 0)
             {
-                copy_payload(g_sched[existing].data, cmd.data);
+                copy_tx_frame(g_sched[existing].frame, cmd.frame);
                 g_sched[existing].period_ms = cmd.period_ms;
                 g_sched[existing].next_due_ms = now_ms() + cmd.period_ms;
                 result = ESP_OK;
@@ -448,8 +457,7 @@ namespace MSM_CAN
                 else
                 {
                     g_sched[slot].in_use = true;
-                    g_sched[slot].id = cmd.id;
-                    copy_payload(g_sched[slot].data, cmd.data);
+                    copy_tx_frame(g_sched[slot].frame, cmd.frame);
                     g_sched[slot].period_ms = cmd.period_ms;
                     g_sched[slot].next_due_ms = now_ms() + cmd.period_ms;
                     result = ESP_OK;
@@ -474,7 +482,7 @@ namespace MSM_CAN
                 break;
             }
 
-            const int idx = find_sched_index(cmd.id);
+            const int idx = find_sched_index(cmd.frame.id);
             if (idx < 0)
             {
                 result = ESP_ERR_INVALID_STATE;
@@ -482,10 +490,10 @@ namespace MSM_CAN
             else
             {
                 g_sched[idx].in_use = false;
-                g_sched[idx].id = 0;
+                g_sched[idx].frame.id = 0;
                 g_sched[idx].period_ms = 0;
                 g_sched[idx].next_due_ms = 0;
-                clear_payload(g_sched[idx].data);
+                clear_payload(g_sched[idx].frame.data);
                 result = ESP_OK;
             }
 
@@ -507,7 +515,7 @@ namespace MSM_CAN
                 break;
             }
 
-            const int idx = find_sched_index(cmd.id);
+            const int idx = find_sched_index(cmd.frame.id);
             if (idx < 0)
             {
                 result = ESP_ERR_INVALID_STATE;
@@ -515,7 +523,7 @@ namespace MSM_CAN
             else
             {
                 // Update only the stored payload. The schedule phase is kept.
-                copy_payload(g_sched[idx].data, cmd.data);
+                copy_payload(g_sched[idx].frame.data, cmd.frame.data);
                 result = ESP_OK;
             }
 
@@ -627,20 +635,21 @@ namespace MSM_CAN
         for (int i = 0; i < MSM_CAN_MAX_SUBS; i++)
         {
             g_subs[i].in_use = false;
-            g_subs[i].has_last_packet = false;
+            g_subs[i].has_last_frame = false;
             g_subs[i].id = 0;
-            clear_payload(g_subs[i].last_packet);
-            g_subs[i].last_timestamp_ms = 0;
+            g_subs[i].last_frame.id = 0;
+            clear_payload(g_subs[i].last_frame.data);
+            g_subs[i].last_frame.timestamp_ms = 0;
             g_subs[i].callback = nullptr;
         }
 
         for (int i = 0; i < MSM_CAN_MAX_SCHEDULED_TX; i++)
         {
             g_sched[i].in_use = false;
-            g_sched[i].id = 0;
+            g_sched[i].frame.id = 0;
             g_sched[i].period_ms = 0;
             g_sched[i].next_due_ms = 0;
-            clear_payload(g_sched[i].data);
+            clear_payload(g_sched[i].frame.data);
         }
 
         twai_onchip_node_config_t node_config = {
@@ -671,7 +680,7 @@ namespace MSM_CAN
             return err;
         }
 
-        g_rx_queue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(RxPkt));
+        g_rx_queue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(RxQueueItem));
         if (g_rx_queue == nullptr)
         {
             twai_node_delete(g_node);
@@ -743,8 +752,7 @@ namespace MSM_CAN
     }
 
     static esp_err_t submit_tx_cmd_and_wait(TxCmdType type,
-                                            uint16_t id,
-                                            const uint8_t data[8],
+                                            const TxFrame& frame,
                                             uint32_t period_ms)
     {
         if (!g_initialised)
@@ -752,15 +760,7 @@ namespace MSM_CAN
             return ESP_ERR_INVALID_STATE;
         }
 
-        if (!is_allowed_tx_id(id))
-        {
-            return ESP_ERR_INVALID_ARG;
-        }
-
-        if ((type == TxCmdType::SendNow ||
-             type == TxCmdType::Schedule ||
-             type == TxCmdType::UpdatePayload) &&
-            data == nullptr)
+        if (!is_allowed_tx_id(frame.id))
         {
             return ESP_ERR_INVALID_ARG;
         }
@@ -785,19 +785,10 @@ namespace MSM_CAN
 
         TxCmd cmd{};
         cmd.type = type;
-        cmd.id = id;
+        copy_tx_frame(cmd.frame, frame);
         cmd.period_ms = period_ms;
         cmd.done_sem = done_sem;
         cmd.result_ptr = &result;
-
-        if (data != nullptr)
-        {
-            copy_payload(cmd.data, data);
-        }
-        else
-        {
-            clear_payload(cmd.data);
-        }
 
         if (xQueueSend(g_tx_cmd_queue, &cmd, pdMS_TO_TICKS(TX_CMD_WAIT_MS)) != pdTRUE)
         {
@@ -815,28 +806,30 @@ namespace MSM_CAN
         return result;
     }
 
-    esp_err_t send_msg(uint16_t id, const uint8_t data[8])
+    esp_err_t send_msg(const TxFrame& frame)
     {
-        return submit_tx_cmd_and_wait(TxCmdType::SendNow, id, data, 0);
+        return submit_tx_cmd_and_wait(TxCmdType::SendNow, frame, 0);
     }
 
-    esp_err_t schedule(uint16_t id, const uint8_t data[8], uint32_t period_ms)
+    esp_err_t schedule(const TxFrame& frame, uint32_t period_ms)
     {
-        return submit_tx_cmd_and_wait(TxCmdType::Schedule, id, data, period_ms);
+        return submit_tx_cmd_and_wait(TxCmdType::Schedule, frame, period_ms);
     }
 
-    esp_err_t update_scheduled_payload(uint16_t id, const uint8_t data[8])
+    esp_err_t update_scheduled_payload(const TxFrame& frame)
     {
-        return submit_tx_cmd_and_wait(TxCmdType::UpdatePayload, id, data, 0);
+        return submit_tx_cmd_and_wait(TxCmdType::UpdatePayload, frame, 0);
     }
 
     esp_err_t unschedule(uint16_t id)
     {
-        return submit_tx_cmd_and_wait(TxCmdType::Unschedule, id, nullptr, 0);
+        TxFrame frame{};
+        frame.id = id;
+        clear_payload(frame.data);
+        return submit_tx_cmd_and_wait(TxCmdType::Unschedule, frame, 0);
     }
 
-    esp_err_t subscribe(uint16_t id,
-                        void (*callback)(uint16_t, const uint8_t[8], uint32_t))
+    esp_err_t subscribe(uint16_t id, RxCallback callback)
     {
         if (!g_initialised)
         {
@@ -879,10 +872,11 @@ namespace MSM_CAN
         }
 
         g_subs[slot].in_use = true;
-        g_subs[slot].has_last_packet = false;
+        g_subs[slot].has_last_frame = false;
         g_subs[slot].id = id;
-        clear_payload(g_subs[slot].last_packet);
-        g_subs[slot].last_timestamp_ms = 0;
+        g_subs[slot].last_frame.id = 0;
+        clear_payload(g_subs[slot].last_frame.data);
+        g_subs[slot].last_frame.timestamp_ms = 0;
         g_subs[slot].callback = callback;
 
         xSemaphoreGive(g_subs_mutex);
@@ -919,53 +913,54 @@ namespace MSM_CAN
         }
 
         g_subs[idx].in_use = false;
-        g_subs[idx].has_last_packet = false;
+        g_subs[idx].has_last_frame = false;
         g_subs[idx].id = 0;
-        clear_payload(g_subs[idx].last_packet);
-        g_subs[idx].last_timestamp_ms = 0;
+        g_subs[idx].last_frame.id = 0;
+        clear_payload(g_subs[idx].last_frame.data);
+        g_subs[idx].last_frame.timestamp_ms = 0;
         g_subs[idx].callback = nullptr;
 
         xSemaphoreGive(g_subs_mutex);
         return ESP_OK;
     }
 
-    LatestPacket get(uint16_t id)
+    esp_err_t get(uint16_t id, RxFrame& frame)
     {
-        LatestPacket packet = {};
+        frame.id = 0;
+        clear_payload(frame.data);
+        frame.timestamp_ms = 0;
 
         if (!g_initialised)
         {
-            return packet;
+            return ESP_ERR_INVALID_STATE;
         }
 
         if (id > 0x7FFu)
         {
-            return packet;
+            return ESP_ERR_INVALID_ARG;
         }
 
         if (g_subs_mutex == nullptr)
         {
-            return packet;
+            return ESP_ERR_INVALID_STATE;
         }
 
         if (xSemaphoreTake(g_subs_mutex, portMAX_DELAY) != pdTRUE)
         {
-            return packet;
+            return ESP_FAIL;
         }
 
         const int idx = find_sub_index(id);
-        if (idx < 0 || !g_subs[idx].has_last_packet)
+        if (idx < 0 || !g_subs[idx].has_last_frame)
         {
             xSemaphoreGive(g_subs_mutex);
-            return packet;
+            return ESP_ERR_NOT_FOUND;
         }
 
-        copy_payload(packet.data, g_subs[idx].last_packet);
-        packet.timestamp_ms = g_subs[idx].last_timestamp_ms;
-        packet.has_packet = true;
+        copy_rx_frame(frame, g_subs[idx].last_frame);
                 
         xSemaphoreGive(g_subs_mutex);
-        return packet;
+        return ESP_OK;
     }
 
 }

@@ -20,7 +20,7 @@ This library is intentionally strict.
 
 This library:
 
-- Transmits and receives raw `uint8_t[8]` payloads
+- Transmits `TxFrame` values and receives timestamped `RxFrame` values
 - Supports periodic scheduled transmission
 - Enforces TX ID ranges
 - Manages hardware filtering
@@ -116,16 +116,15 @@ MSM_CAN::subscribe(0x201); // callback optional
 Callback signature, if used:
 
 ```cpp
-void my_callback(uint16_t id,
-                 const uint8_t data[8],
-                 uint32_t timestamp_ms);
+void my_callback(const MSM_CAN::RxFrame& frame);
 ```
 
 Rules:
 
 - Must be fast
 - Must not block
-- Must not store the pointer to `data`
+- Must not store the reference to `frame`
+- May copy `frame.data` if it needs to keep the payload
 - Always receives exactly 8 bytes
 
 If the ID does not pass hardware filtering, `subscribe()` returns `ESP_ERR_INVALID_ARG`.
@@ -133,17 +132,18 @@ If the ID does not pass hardware filtering, `subscribe()` returns `ESP_ERR_INVAL
 For polling-only users, each subscribed ID also caches its most recent received frame:
 
 ```cpp
-MSM_CAN::LatestPacket packet = MSM_CAN::get(0x200);
-if (packet.has_packet)
+MSM_CAN::RxFrame frame = {};
+if (MSM_CAN::get(0x200, frame) == ESP_OK)
 {
-    uint16_t value = MSM_CAN::unpack_u16(packet.data, 0);
-    uint32_t timestamp_ms = packet.timestamp_ms;
+    uint16_t value = MSM_CAN::unpack_u16(frame.data, 0);
+    uint32_t timestamp_ms = frame.timestamp_ms;
 }
 ```
 
-`get()` returns a zeroed `LatestPacket` with `has_packet == false` when the
-driver is not initialised, the ID is invalid, the ID is not subscribed, or no
-packet has been received yet.
+`get()` writes the latest cached `RxFrame` and returns `ESP_OK` when a packet is
+available. It returns `ESP_ERR_INVALID_STATE` when the driver is not initialised,
+`ESP_ERR_INVALID_ARG` for an invalid ID, and `ESP_ERR_NOT_FOUND` when the ID is
+not subscribed or no packet has been received yet.
 
 The packet data is copied out of the internal cache before `get()` returns.
 
@@ -152,11 +152,11 @@ The packet data is copied out of the internal cache before `get()` returns.
 ## 4. Transmit
 
 ```cpp
-uint8_t payload[8];
-MSM_CAN::clear_payload(payload);
+MSM_CAN::TxFrame frame = {};
+frame.id = 0x500;
 
-MSM_CAN::pack_u16(payload, 0, 1234);
-MSM_CAN::send_msg(0x500, payload);
+MSM_CAN::pack_u16(frame.data, 0, 1234);
+MSM_CAN::send_msg(frame);
 ```
 
 Transmission rules:
@@ -169,9 +169,9 @@ Transmission rules:
 Periodic transmit helpers:
 
 ```cpp
-MSM_CAN::schedule(0x501, payload, 100);             // send every 100 ms
-MSM_CAN::update_scheduled_payload(0x501, payload);  // update payload only
-MSM_CAN::unschedule(0x501);                         // stop periodic transmit
+MSM_CAN::schedule(frame, 100);                    // send every 100 ms
+MSM_CAN::update_scheduled_payload(frame);         // update payload only
+MSM_CAN::unschedule(frame.id);                    // stop periodic transmit
 ```
 
 ---
@@ -296,6 +296,7 @@ Common return values:
 - `ESP_ERR_INVALID_STATE` -> Called before init or invalid call order
 - `ESP_ERR_INVALID_ARG` -> Invalid ID or hardware filter mismatch
 - `ESP_ERR_NO_MEM` -> No subscription slots available
+- `ESP_ERR_NOT_FOUND` -> No cached RX frame is available for that ID
 - `ESP_FAIL` -> Internal failure
 
 Application code should wrap `esp_err_t`-returning calls with:
