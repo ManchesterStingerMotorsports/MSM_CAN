@@ -25,7 +25,7 @@ This library:
 - Enforces TX ID ranges
 - Manages hardware filtering
 - Provides safe callback-based reception
-- Caches the latest received packet per subscribed ID
+- Caches the latest received frame per subscribed ID
 - Protects internal state with FreeRTOS mutexes
 - Uses fixed-size subscription and scheduled-TX tables
 - Provides header-only big-endian packing and unpacking helpers
@@ -64,9 +64,50 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
 ```
 
 Increasing `MSM_CAN_MAX_SUBS` raises static RAM usage because each subscription
-slot stores callback metadata and one cached 8-byte receive packet. Increasing
+slot stores callback metadata and one cached 8-byte receive frame. Increasing
 `MSM_CAN_MAX_SCHEDULED_TX` raises static RAM usage because each scheduled TX
 slot stores the ID, payload, period, and next due time.
+
+---
+
+# Frame Types
+
+MSM_CAN uses two frame structs:
+
+```cpp
+struct TxFrame
+{
+    uint16_t id;
+    uint8_t data[8];
+};
+
+struct RxFrame
+{
+    uint16_t id;
+    uint8_t data[8];
+    uint32_t timestamp_ms;
+};
+```
+
+`TxFrame` is used for anything the application sends. It contains only the CAN
+identifier and the 8-byte payload because TX frames do not have a receive
+timestamp.
+
+`RxFrame` is used for anything the driver receives. It contains the CAN
+identifier, a copied 8-byte payload, and the driver timestamp in milliseconds.
+
+Both frame types use standard 11-bit CAN IDs. The `data` field is always exactly
+8 bytes, matching this library's fixed DLC policy. The packing and unpacking
+helpers operate directly on the `data` field:
+
+```cpp
+MSM_CAN::TxFrame tx = {};
+tx.id = 0x500;
+MSM_CAN::pack_u16(tx.data, 0, 1234);
+
+MSM_CAN::RxFrame rx = {};
+uint16_t value = MSM_CAN::unpack_u16(rx.data, 0);
+```
 
 ---
 
@@ -119,6 +160,9 @@ Callback signature, if used:
 void my_callback(const MSM_CAN::RxFrame& frame);
 ```
 
+The callback receives a const reference to a temporary `RxFrame` owned by the RX
+task. Read it during the callback, or copy out any fields that must live longer.
+
 Rules:
 
 - Must be fast
@@ -140,12 +184,12 @@ if (MSM_CAN::get(0x200, frame) == ESP_OK)
 }
 ```
 
-`get()` writes the latest cached `RxFrame` and returns `ESP_OK` when a packet is
+`get()` writes the latest cached `RxFrame` and returns `ESP_OK` when a frame is
 available. It returns `ESP_ERR_INVALID_STATE` when the driver is not initialised,
 `ESP_ERR_INVALID_ARG` for an invalid ID, and `ESP_ERR_NOT_FOUND` when the ID is
-not subscribed or no packet has been received yet.
+not subscribed or no frame has been received yet.
 
-The packet data is copied out of the internal cache before `get()` returns.
+The frame data is copied out of the internal cache before `get()` returns.
 
 ---
 
@@ -215,7 +259,7 @@ RX task behaviour:
 - Rejects non-8-byte frames
 - Copies payload to local buffer
 - Locks subscription table
-- Updates cached packet/timestamp for the matching subscribed ID
+- Updates cached frame/timestamp for the matching subscribed ID
 - Copies callback pointer
 - Unlocks
 - Executes callback outside the lock if one was provided
