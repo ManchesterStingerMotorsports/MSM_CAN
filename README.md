@@ -133,6 +133,8 @@ If no filter is configured, the default behaviour is TX-only.
 MSM_CAN::init(RX_GPIO, TX_GPIO);
 ```
 
+RX and TX tasks are pinned to the core that calls `init()`.
+
 Initialisation performs:
 
 - TWAI node creation
