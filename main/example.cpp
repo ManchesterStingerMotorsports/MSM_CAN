@@ -33,8 +33,8 @@ static void can_callback(uint16_t id,
 extern "C" void app_main(void)
 {
     // Listen for one incoming ID and initialise the CAN driver.
-    MSM_CAN::set_hardware_filters(0x200);
-    MSM_CAN::init(GPIO_NUM_5, GPIO_NUM_4);
+    ESP_ERROR_CHECK(MSM_CAN::set_hardware_filters(0x200));
+    ESP_ERROR_CHECK(MSM_CAN::init(GPIO_NUM_5, GPIO_NUM_4));
     MSM_CAN::subscribe(0x200, can_callback);
 
     // A subscription can also be callback-free. The latest packet is cached

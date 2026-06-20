@@ -748,22 +748,39 @@ namespace MSM_CAN
         }
     }
 
-    void set_hardware_filters()
+    esp_err_t set_hardware_filters()
     {
+        if (g_initialised)
+        {
+            return ESP_ERR_INVALID_STATE;
+        }
+
         s_filter_cfg.id = 0xFFFFFFFFu;
         s_filter_cfg.mask = 0xFFFFFFFFu;
         s_filter_cfg.is_ext = false;
+        return ESP_OK;
     }
 
-    void set_hardware_filters(uint32_t id)
+    esp_err_t set_hardware_filters(uint32_t id)
     {
+        if (g_initialised)
+        {
+            return ESP_ERR_INVALID_STATE;
+        }
+
         s_filter_cfg.id = (id & 0x7FFu);
         s_filter_cfg.mask = 0x7FFu;
         s_filter_cfg.is_ext = false;
+        return ESP_OK;
     }
 
-    void set_hardware_filters(uint32_t low, uint32_t high)
+    esp_err_t set_hardware_filters(uint32_t low, uint32_t high)
     {
+        if (g_initialised)
+        {
+            return ESP_ERR_INVALID_STATE;
+        }
+
         low &= 0x7FFu;
         high &= 0x7FFu;
         if (low > high)
@@ -773,8 +790,7 @@ namespace MSM_CAN
 
         if (low == high)
         {
-            set_hardware_filters(low);
-            return;
+            return set_hardware_filters(low);
         }
 
         const uint32_t diff = (low ^ high);
@@ -786,6 +802,7 @@ namespace MSM_CAN
         s_filter_cfg.id = (low & block_mask);
         s_filter_cfg.mask = block_mask;
         s_filter_cfg.is_ext = false;
+        return ESP_OK;
     }
 
     esp_err_t init(gpio_num_t rx_gpio, gpio_num_t tx_gpio)

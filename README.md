@@ -118,12 +118,14 @@ uint16_t value = MSM_CAN::unpack_u16(rx.data, 0);
 Must be called **before `init()`**.
 
 ```cpp
-MSM_CAN::set_hardware_filters();               // TX-only (accept none)
-MSM_CAN::set_hardware_filters(0x200);          // Accept one ID
-MSM_CAN::set_hardware_filters(0x200, 0x2FF);   // Accept range (mask-block superset)
+ESP_ERROR_CHECK(MSM_CAN::set_hardware_filters());              // TX-only (accept none)
+ESP_ERROR_CHECK(MSM_CAN::set_hardware_filters(0x200));         // Accept one ID
+ESP_ERROR_CHECK(MSM_CAN::set_hardware_filters(0x200, 0x2FF));  // Accept range
 ```
 
-If no filter is configured, the default behaviour is TX-only.
+If no filter is configured, the default behaviour is TX-only. Hardware filters
+are applied during `init()`, so `set_hardware_filters()` returns
+`ESP_ERR_INVALID_STATE` after the driver is initialised.
 
 ---
 
@@ -261,6 +263,10 @@ Mask filter logic:
 Range filtering uses a mask-block superset.
 
 Important:
+
+Hardware filters must be configured before `init()`. Runtime filter changes are
+rejected so software subscription validation cannot drift away from the active
+TWAI hardware filter.
 
 Hardware filtering may accept a superset of IDs.  
 The software subscription table ensures only explicitly subscribed IDs trigger callbacks.

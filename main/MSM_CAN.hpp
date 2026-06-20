@@ -68,9 +68,9 @@ namespace MSM_CAN
     void get_diagnostics(Diagnostics& diagnostics);
     void reset_diagnostics();
 
-    void set_hardware_filters();
-    void set_hardware_filters(uint32_t id);
-    void set_hardware_filters(uint32_t low, uint32_t high);
+    esp_err_t set_hardware_filters();
+    esp_err_t set_hardware_filters(uint32_t id);
+    esp_err_t set_hardware_filters(uint32_t low, uint32_t high);
        
     inline void pack_u16(uint8_t data[8], uint8_t index, uint16_t value)                //helper function to pack uint8_t data[8] with a big-endian encoded uint16_t 
     {
