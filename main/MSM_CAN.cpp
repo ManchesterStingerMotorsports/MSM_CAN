@@ -67,7 +67,7 @@ namespace MSM_CAN
     static constexpr size_t TX_CMD_QUEUE_DEPTH = 16;
 
     static constexpr uint32_t TX_TIMEOUT_MS = 10;
-    static constexpr uint32_t TX_CMD_WAIT_MS = 50;
+    static constexpr uint32_t TX_CMD_QUEUE_WAIT_MS = 50;
     static constexpr uint32_t BITRATE = 1000000;
     static constexpr uint8_t TX_QUEUE_DEPTH = 8;
     static constexpr uint8_t FAIL_RETRY_CNT = 3;
@@ -889,19 +889,14 @@ namespace MSM_CAN
         cmd.done_sem = done_sem;
         cmd.result_ptr = &result;
 
-        if (xQueueSend(g_tx_cmd_queue, &cmd, pdMS_TO_TICKS(TX_CMD_WAIT_MS)) != pdTRUE)
+        if (xQueueSend(g_tx_cmd_queue, &cmd, pdMS_TO_TICKS(TX_CMD_QUEUE_WAIT_MS)) != pdTRUE)
         {
             vSemaphoreDelete(done_sem);
             diag_note_tx_failure(ESP_ERR_TIMEOUT);
             return ESP_ERR_TIMEOUT;
         }
 
-        if (xSemaphoreTake(done_sem, pdMS_TO_TICKS(TX_CMD_WAIT_MS)) != pdTRUE)
-        {
-            vSemaphoreDelete(done_sem);
-            diag_note_tx_failure(ESP_ERR_TIMEOUT);
-            return ESP_ERR_TIMEOUT;
-        }
+        (void)xSemaphoreTake(done_sem, portMAX_DELAY);
 
         vSemaphoreDelete(done_sem);
         return result;
