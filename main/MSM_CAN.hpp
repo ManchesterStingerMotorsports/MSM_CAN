@@ -29,6 +29,16 @@ namespace MSM_CAN
         uint32_t timestamp_ms;
     };
 
+    struct Diagnostics
+    {
+        uint32_t rx_drops;
+        uint32_t ignored_frames;
+        uint32_t tx_failures;
+        uint32_t scheduled_sends;
+        esp_err_t last_tx_error;
+        esp_err_t last_rx_error;
+    };
+
     using RxCallback = void (*)(const RxFrame& frame);
 
     esp_err_t init(gpio_num_t rx_gpio, gpio_num_t tx_gpio);  
@@ -54,6 +64,9 @@ namespace MSM_CAN
     esp_err_t unsubscribe(uint16_t id);
     
     esp_err_t get(uint16_t id, RxFrame& frame);
+
+    void get_diagnostics(Diagnostics& diagnostics);
+    void reset_diagnostics();
 
     void set_hardware_filters();
     void set_hardware_filters(uint32_t id);

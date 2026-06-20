@@ -22,6 +22,7 @@ This library:
 
 - Transmits `TxFrame` values and receives timestamped `RxFrame` values
 - Supports periodic scheduled transmission
+- Exposes lightweight diagnostics counters
 - Manages hardware filtering
 - Provides safe callback-based reception
 - Caches the latest received frame per subscribed ID
@@ -39,6 +40,7 @@ The system consists of:
 - A configurable fixed-size scheduled TX table (no heap usage)
 - A FreeRTOS RX task
 - A FreeRTOS TX task
+- Lightweight diagnostics counters for bus telemetry
 - Mutexes protecting subscription and schedule state
 - Hardware mask filtering via TWAI
 
@@ -218,6 +220,36 @@ MSM_CAN::update_scheduled_payload(frame);         // update payload only
 MSM_CAN::unschedule(frame.id);                    // stop periodic transmit
 ```
 
+---
+
+## 5. Read Diagnostics
+
+Diagnostics can be sampled at runtime without stopping the RX or TX tasks:
+
+```cpp
+MSM_CAN::Diagnostics diagnostics = {};
+MSM_CAN::get_diagnostics(diagnostics);
+
+uint32_t rx_drops = diagnostics.rx_drops;
+uint32_t tx_failures = diagnostics.tx_failures;
+esp_err_t last_tx_error = diagnostics.last_tx_error;
+```
+
+Counters can be cleared when starting a new telemetry window:
+
+```cpp
+MSM_CAN::reset_diagnostics();
+```
+
+Diagnostics fields:
+
+- `rx_drops` counts RX events that could not be queued for task-level processing.
+- `ignored_frames` counts received frames ignored by software, such as extended IDs, non-8-byte frames, or frames with no matching subscription.
+- `tx_failures` counts failed transmit attempts and TX command queue timeouts.
+- `scheduled_sends` counts successful sends performed by the scheduled-TX task.
+- `last_tx_error` stores the most recent non-`ESP_OK` TX error.
+- `last_rx_error` stores the most recent non-`ESP_OK` RX error.
+
 # Hardware Filtering
 
 Mask filter logic:
@@ -265,6 +297,8 @@ Protected operations:
 - `schedule()`
 - `update_scheduled_payload()`
 - `unschedule()`
+- `get_diagnostics()`
+- `reset_diagnostics()`
 - RX callback lookup
 
 The mutex is never held while executing user callbacks.

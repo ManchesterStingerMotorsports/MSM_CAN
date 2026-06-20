@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -87,6 +88,9 @@ namespace MSM_CAN
 
     static twai_node_handle_t g_node = nullptr;
 
+    static portMUX_TYPE g_diag_mux = portMUX_INITIALIZER_UNLOCKED;
+    static Diagnostics g_diag = {};
+
     static twai_mask_filter_config_t s_filter_cfg =
         {
             .id = 0xFFFFFFFFu,
@@ -102,6 +106,85 @@ namespace MSM_CAN
             idx++;
         }
         return idx;
+    }
+
+    static void diag_reset()
+    {
+        portENTER_CRITICAL(&g_diag_mux);
+        g_diag.rx_drops = 0;
+        g_diag.ignored_frames = 0;
+        g_diag.tx_failures = 0;
+        g_diag.scheduled_sends = 0;
+        g_diag.last_tx_error = ESP_OK;
+        g_diag.last_rx_error = ESP_OK;
+        portEXIT_CRITICAL(&g_diag_mux);
+    }
+
+    static void diag_note_rx_drop_from_isr(esp_err_t err)
+    {
+        portENTER_CRITICAL_ISR(&g_diag_mux);
+        g_diag.rx_drops++;
+        g_diag.last_rx_error = err;
+        portEXIT_CRITICAL_ISR(&g_diag_mux);
+    }
+
+    static void diag_note_rx_drop(esp_err_t err)
+    {
+        portENTER_CRITICAL(&g_diag_mux);
+        g_diag.rx_drops++;
+        g_diag.last_rx_error = err;
+        portEXIT_CRITICAL(&g_diag_mux);
+    }
+
+    static void diag_note_ignored_frame_from_isr(esp_err_t err)
+    {
+        portENTER_CRITICAL_ISR(&g_diag_mux);
+        g_diag.ignored_frames++;
+        g_diag.last_rx_error = err;
+        portEXIT_CRITICAL_ISR(&g_diag_mux);
+    }
+
+    static void diag_note_ignored_frame(esp_err_t err)
+    {
+        portENTER_CRITICAL(&g_diag_mux);
+        g_diag.ignored_frames++;
+        g_diag.last_rx_error = err;
+        portEXIT_CRITICAL(&g_diag_mux);
+    }
+
+    static void diag_note_tx_failure(esp_err_t err)
+    {
+        portENTER_CRITICAL(&g_diag_mux);
+        g_diag.tx_failures++;
+        g_diag.last_tx_error = err;
+        portEXIT_CRITICAL(&g_diag_mux);
+    }
+
+    static void diag_note_scheduled_send()
+    {
+        portENTER_CRITICAL(&g_diag_mux);
+        g_diag.scheduled_sends++;
+        portEXIT_CRITICAL(&g_diag_mux);
+    }
+
+    static void diag_note_tx_result(esp_err_t err)
+    {
+        if (err != ESP_OK)
+        {
+            diag_note_tx_failure(err);
+        }
+    }
+
+    static void diag_note_scheduled_tx_result(esp_err_t err)
+    {
+        if (err == ESP_OK)
+        {
+            diag_note_scheduled_send();
+        }
+        else
+        {
+            diag_note_tx_failure(err);
+        }
     }
 
     static bool is_allowed_rx_id(uint16_t id)
@@ -241,17 +324,21 @@ namespace MSM_CAN
             .buffer_len = sizeof(buf),
         };
 
-        if (twai_node_receive_from_isr(handle, &rx_frame) != ESP_OK)
+        const esp_err_t err = twai_node_receive_from_isr(handle, &rx_frame);
+        if (err != ESP_OK)
         {
+            diag_note_rx_drop_from_isr(err);
             return false;
         }
 
         if (rx_frame.header.ide)
         {
+            diag_note_ignored_frame_from_isr(ESP_ERR_INVALID_ARG);
             return false;
         }
         if (rx_frame.buffer_len != 8 || rx_frame.buffer == nullptr)
         {
+            diag_note_ignored_frame_from_isr(ESP_ERR_INVALID_SIZE);
             return false;
         }
 
@@ -265,7 +352,14 @@ namespace MSM_CAN
         BaseType_t hp_task_woken = pdFALSE;
         if (g_rx_queue != nullptr)
         {
-            (void)xQueueSendFromISR(g_rx_queue, &pkt, &hp_task_woken);
+            if (xQueueSendFromISR(g_rx_queue, &pkt, &hp_task_woken) != pdTRUE)
+            {
+                diag_note_rx_drop_from_isr(ESP_ERR_TIMEOUT);
+            }
+        }
+        else
+        {
+            diag_note_rx_drop_from_isr(ESP_ERR_INVALID_STATE);
         }
 
         return (hp_task_woken == pdTRUE);
@@ -306,7 +400,15 @@ namespace MSM_CAN
                     g_subs[idx].has_last_frame = true;
                     cb = g_subs[idx].callback;
                 }
+                else
+                {
+                    diag_note_ignored_frame(ESP_ERR_NOT_FOUND);
+                }
                 xSemaphoreGive(g_subs_mutex);
+            }
+            else
+            {
+                diag_note_rx_drop(ESP_ERR_INVALID_STATE);
             }
 
             if (cb != nullptr)
@@ -397,7 +499,8 @@ namespace MSM_CAN
 
             if (should_send)
             {
-                (void)transmit_frame_blocking(frame);
+                const esp_err_t err = transmit_frame_blocking(frame);
+                diag_note_scheduled_tx_result(err);
             }
         }
     }
@@ -411,6 +514,7 @@ namespace MSM_CAN
         case TxCmdType::SendNow:
         {
             result = transmit_frame_blocking(cmd.frame);
+            diag_note_tx_result(result);
             break;
         }
 
@@ -609,6 +713,8 @@ namespace MSM_CAN
             return ESP_ERR_INVALID_ARG;
         }
 
+        diag_reset();
+
         const BaseType_t task_core_id = xPortGetCoreID();
 
         g_subs_mutex = xSemaphoreCreateMutex();
@@ -786,12 +892,14 @@ namespace MSM_CAN
         if (xQueueSend(g_tx_cmd_queue, &cmd, pdMS_TO_TICKS(TX_CMD_WAIT_MS)) != pdTRUE)
         {
             vSemaphoreDelete(done_sem);
+            diag_note_tx_failure(ESP_ERR_TIMEOUT);
             return ESP_ERR_TIMEOUT;
         }
 
         if (xSemaphoreTake(done_sem, pdMS_TO_TICKS(TX_CMD_WAIT_MS)) != pdTRUE)
         {
             vSemaphoreDelete(done_sem);
+            diag_note_tx_failure(ESP_ERR_TIMEOUT);
             return ESP_ERR_TIMEOUT;
         }
 
@@ -954,6 +1062,18 @@ namespace MSM_CAN
                 
         xSemaphoreGive(g_subs_mutex);
         return ESP_OK;
+    }
+
+    void get_diagnostics(Diagnostics& diagnostics)
+    {
+        portENTER_CRITICAL(&g_diag_mux);
+        diagnostics = g_diag;
+        portEXIT_CRITICAL(&g_diag_mux);
+    }
+
+    void reset_diagnostics()
+    {
+        diag_reset();
     }
 
 }
