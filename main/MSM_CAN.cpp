@@ -83,10 +83,14 @@ namespace MSM_CAN
     static SemaphoreHandle_t g_subs_mutex = nullptr;
     static SemaphoreHandle_t g_sched_mutex = nullptr;
 
+    static TaskHandle_t g_rx_task_handle = nullptr;
+    static TaskHandle_t g_tx_task_handle = nullptr;
+
     static SubEntry g_subs[MSM_CAN_MAX_SUBS];
     static ScheduledEntry g_sched[MSM_CAN_MAX_SCHEDULED_TX];
 
     static twai_node_handle_t g_node = nullptr;
+    static bool g_node_enabled = false;
 
     static portMUX_TYPE g_diag_mux = portMUX_INITIALIZER_UNLOCKED;
     static Diagnostics g_diag = {};
@@ -185,6 +189,89 @@ namespace MSM_CAN
         {
             diag_note_tx_failure(err);
         }
+    }
+
+    static void clear_subscriptions()
+    {
+        for (int i = 0; i < MSM_CAN_MAX_SUBS; i++)
+        {
+            g_subs[i].in_use = false;
+            g_subs[i].has_last_frame = false;
+            g_subs[i].id = 0;
+            g_subs[i].last_frame.id = 0;
+            clear_payload(g_subs[i].last_frame.data);
+            g_subs[i].last_frame.timestamp_ms = 0;
+            g_subs[i].callback = nullptr;
+        }
+    }
+
+    static void clear_scheduled_entries()
+    {
+        for (int i = 0; i < MSM_CAN_MAX_SCHEDULED_TX; i++)
+        {
+            g_sched[i].in_use = false;
+            g_sched[i].frame.id = 0;
+            g_sched[i].period_ms = 0;
+            g_sched[i].next_due_ms = 0;
+            clear_payload(g_sched[i].frame.data);
+        }
+    }
+
+    static void cleanup_init_resources()
+    {
+        g_initialised = false;
+
+        if (g_rx_task_handle != nullptr)
+        {
+            vTaskDelete(g_rx_task_handle);
+            g_rx_task_handle = nullptr;
+        }
+
+        if (g_tx_task_handle != nullptr)
+        {
+            vTaskDelete(g_tx_task_handle);
+            g_tx_task_handle = nullptr;
+        }
+
+        if (g_node != nullptr)
+        {
+            if (g_node_enabled)
+            {
+                (void)twai_node_disable(g_node);
+                g_node_enabled = false;
+            }
+
+            twai_node_delete(g_node);
+            g_node = nullptr;
+        }
+        g_node_enabled = false;
+
+        if (g_tx_cmd_queue != nullptr)
+        {
+            vQueueDelete(g_tx_cmd_queue);
+            g_tx_cmd_queue = nullptr;
+        }
+
+        if (g_rx_queue != nullptr)
+        {
+            vQueueDelete(g_rx_queue);
+            g_rx_queue = nullptr;
+        }
+
+        if (g_sched_mutex != nullptr)
+        {
+            vSemaphoreDelete(g_sched_mutex);
+            g_sched_mutex = nullptr;
+        }
+
+        if (g_subs_mutex != nullptr)
+        {
+            vSemaphoreDelete(g_subs_mutex);
+            g_subs_mutex = nullptr;
+        }
+
+        clear_subscriptions();
+        clear_scheduled_entries();
     }
 
     static bool is_allowed_rx_id(uint16_t id)
@@ -720,34 +807,19 @@ namespace MSM_CAN
         g_subs_mutex = xSemaphoreCreateMutex();
         if (g_subs_mutex == nullptr)
         {
+            cleanup_init_resources();
             return ESP_ERR_NO_MEM;
         }
 
         g_sched_mutex = xSemaphoreCreateMutex();
         if (g_sched_mutex == nullptr)
         {
+            cleanup_init_resources();
             return ESP_ERR_NO_MEM;
         }
 
-        for (int i = 0; i < MSM_CAN_MAX_SUBS; i++)
-        {
-            g_subs[i].in_use = false;
-            g_subs[i].has_last_frame = false;
-            g_subs[i].id = 0;
-            g_subs[i].last_frame.id = 0;
-            clear_payload(g_subs[i].last_frame.data);
-            g_subs[i].last_frame.timestamp_ms = 0;
-            g_subs[i].callback = nullptr;
-        }
-
-        for (int i = 0; i < MSM_CAN_MAX_SCHEDULED_TX; i++)
-        {
-            g_sched[i].in_use = false;
-            g_sched[i].frame.id = 0;
-            g_sched[i].period_ms = 0;
-            g_sched[i].next_due_ms = 0;
-            clear_payload(g_sched[i].frame.data);
-        }
+        clear_subscriptions();
+        clear_scheduled_entries();
 
         twai_onchip_node_config_t node_config = {
             .io_cfg = {
@@ -766,30 +838,28 @@ namespace MSM_CAN
         esp_err_t err = twai_new_node_onchip(&node_config, &g_node);
         if (err != ESP_OK)
         {
+            cleanup_init_resources();
             return err;
         }
 
         err = twai_node_config_mask_filter(g_node, 0, &s_filter_cfg);
         if (err != ESP_OK)
         {
-            twai_node_delete(g_node);
-            g_node = nullptr;
+            cleanup_init_resources();
             return err;
         }
 
         g_rx_queue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(RxQueueItem));
         if (g_rx_queue == nullptr)
         {
-            twai_node_delete(g_node);
-            g_node = nullptr;
+            cleanup_init_resources();
             return ESP_ERR_NO_MEM;
         }
 
         g_tx_cmd_queue = xQueueCreate(TX_CMD_QUEUE_DEPTH, sizeof(TxCmd));
         if (g_tx_cmd_queue == nullptr)
         {
-            twai_node_delete(g_node);
-            g_node = nullptr;
+            cleanup_init_resources();
             return ESP_ERR_NO_MEM;
         }
 
@@ -799,18 +869,17 @@ namespace MSM_CAN
         err = twai_node_register_event_callbacks(g_node, &cbs, nullptr);
         if (err != ESP_OK)
         {
-            twai_node_delete(g_node);
-            g_node = nullptr;
+            cleanup_init_resources();
             return err;
         }
 
         err = twai_node_enable(g_node);
         if (err != ESP_OK)
         {
-            twai_node_delete(g_node);
-            g_node = nullptr;
+            cleanup_init_resources();
             return ESP_FAIL;
         }
+        g_node_enabled = true;
 
         BaseType_t rx_task_ok = xTaskCreatePinnedToCore(
             rx_task,
@@ -818,14 +887,13 @@ namespace MSM_CAN
             RX_TASK_STACK,
             nullptr,
             tskIDLE_PRIORITY + 1,
-            nullptr,
+            &g_rx_task_handle,
             task_core_id);
 
         if (rx_task_ok != pdPASS)
         {
-            twai_node_disable(g_node);
-            twai_node_delete(g_node);
-            g_node = nullptr;
+            g_rx_task_handle = nullptr;
+            cleanup_init_resources();
             return ESP_ERR_NO_MEM;
         }
 
@@ -835,14 +903,13 @@ namespace MSM_CAN
             TX_TASK_STACK,
             nullptr,
             tskIDLE_PRIORITY + 1,
-            nullptr,
+            &g_tx_task_handle,
             task_core_id);
 
         if (tx_task_ok != pdPASS)
         {
-            twai_node_disable(g_node);
-            twai_node_delete(g_node);
-            g_node = nullptr;
+            g_tx_task_handle = nullptr;
+            cleanup_init_resources();
             return ESP_ERR_NO_MEM;
         }
 
