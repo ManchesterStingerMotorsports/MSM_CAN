@@ -1,97 +1,130 @@
 #include "MSM_CAN.hpp"
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
 #include "freertos/task.h"
+
+#include "esp_err.h"
 #include "esp_log.h"
 
 static const char *TAG = "MSM_CAN_EXAMPLE";
 
-static volatile bool saw_msg_200 = false;
-static uint8_t last_msg_200[8];
-static volatile uint16_t latest_rx_value = 0;
-static volatile uint32_t latest_rx_timestamp = 0;
+static constexpr gpio_num_t CAN_RX_GPIO = GPIO_NUM_5;
+static constexpr gpio_num_t CAN_TX_GPIO = GPIO_NUM_4;
 
-static void can_callback(uint16_t id,
-                         const uint8_t data[8],
-                         uint32_t timestamp)
+static constexpr uint16_t CALLBACK_RX_ID = 0x200;
+static constexpr uint16_t POLLING_RX_ID = 0x201;
+static constexpr uint16_t ONE_SHOT_TX_ID = 0x500;
+static constexpr uint16_t PERIODIC_TX_ID = 0x501;
+
+static portMUX_TYPE s_callback_sample_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_callback_sample_pending = false;
+static uint16_t s_callback_sample_value = 0;
+static uint32_t s_callback_sample_timestamp_ms = 0;
+static uint32_t s_last_polled_timestamp_ms = 0;
+
+static MSM_CAN::TxFrame make_word_frame(uint16_t id,
+                                        uint16_t first_word,
+                                        uint16_t second_word)
 {
-    if (id != 0x200)
+    MSM_CAN::TxFrame frame = {};
+    frame.id = id;
+    MSM_CAN::pack_u16(frame.data, 0, first_word);
+    MSM_CAN::pack_u16(frame.data, 2, second_word);
+    return frame;
+}
+
+static void callback_rx_handler(const MSM_CAN::RxFrame& frame)
+{
+    if (frame.id != CALLBACK_RX_ID)
     {
         return;
     }
 
-    for (int i = 0; i < 8; i++)
+    const uint16_t value = MSM_CAN::unpack_u16(frame.data, 0);
+
+    portENTER_CRITICAL(&s_callback_sample_mux);
+    s_callback_sample_pending = true;
+    s_callback_sample_value = value;
+    s_callback_sample_timestamp_ms = frame.timestamp_ms;
+    portEXIT_CRITICAL(&s_callback_sample_mux);
+}
+
+static void log_callback_sample_if_available()
+{
+    bool pending = false;
+    uint16_t value = 0;
+    uint32_t timestamp_ms = 0;
+
+    portENTER_CRITICAL(&s_callback_sample_mux);
+    pending = s_callback_sample_pending;
+    if (pending)
     {
-        last_msg_200[i] = data[i];
+        value = s_callback_sample_value;
+        timestamp_ms = s_callback_sample_timestamp_ms;
+        s_callback_sample_pending = false;
+    }
+    portEXIT_CRITICAL(&s_callback_sample_mux);
+
+    if (pending)
+    {
+        ESP_LOGI(TAG,
+                 "Callback RX 0x%03X: value=%u timestamp_ms=%lu",
+                 CALLBACK_RX_ID,
+                 static_cast<unsigned>(value),
+                 static_cast<unsigned long>(timestamp_ms));
+    }
+}
+
+static void poll_latest_frame()
+{
+    MSM_CAN::RxFrame frame = {};
+    // get() leaves the cached frame available; use get_and_clear() for
+    // consume-on-read polling.
+    const esp_err_t err = MSM_CAN::get(POLLING_RX_ID, frame);
+    if (err == ESP_ERR_NOT_FOUND)
+    {
+        return;
     }
 
-    latest_rx_value = MSM_CAN::unpack_u16(data, 0);
-    latest_rx_timestamp = timestamp;
-    saw_msg_200 = true;
+    ESP_ERROR_CHECK(err);
+
+    if (frame.timestamp_ms == s_last_polled_timestamp_ms)
+    {
+        return;
+    }
+    s_last_polled_timestamp_ms = frame.timestamp_ms;
+
+    ESP_LOGI(TAG,
+             "Polled RX 0x%03X: value=%u timestamp_ms=%lu",
+             POLLING_RX_ID,
+             static_cast<unsigned>(MSM_CAN::unpack_u16(frame.data, 0)),
+             static_cast<unsigned long>(frame.timestamp_ms));
 }
 
 extern "C" void app_main(void)
 {
-    // Listen for one incoming ID and initialise the CAN driver.
-    ESP_ERROR_CHECK(MSM_CAN::set_hardware_filters(0x200));
-    ESP_ERROR_CHECK(MSM_CAN::init(GPIO_NUM_5, GPIO_NUM_4));
-    MSM_CAN::subscribe(0x200, can_callback);
+    ESP_ERROR_CHECK(MSM_CAN::set_hardware_filters(CALLBACK_RX_ID, POLLING_RX_ID));
+    ESP_ERROR_CHECK(MSM_CAN::init(CAN_RX_GPIO, CAN_TX_GPIO));
 
-    // A subscription can also be callback-free. The latest packet is cached
-    // internally and can be polled with MSM_CAN::get().
-    MSM_CAN::subscribe(0x201);
+    ESP_ERROR_CHECK(MSM_CAN::subscribe(CALLBACK_RX_ID, callback_rx_handler));
+    ESP_ERROR_CHECK(MSM_CAN::subscribe(POLLING_RX_ID));
 
-    // Send a simple one-shot frame.
-    uint8_t tx_data[8];
-    MSM_CAN::clear_payload(tx_data);
+    MSM_CAN::TxFrame one_shot = make_word_frame(ONE_SHOT_TX_ID, 0x1234, 0x5678);
+    ESP_ERROR_CHECK(MSM_CAN::send_msg(one_shot));
 
-    // Example of the helper pack functions for building a payload.
-    MSM_CAN::pack_u16(tx_data, 0, 0x1234);
-    MSM_CAN::pack_u16(tx_data, 2, 0x5678);
-    MSM_CAN::pack_u8(tx_data, 4, 0x9A);
-
-    MSM_CAN::send_msg(0x500, tx_data);
-
-    // Example of the helper unpack functions for reading data back out.
-    const uint16_t first_word = MSM_CAN::unpack_u16(tx_data, 0);
-    const uint16_t second_word = MSM_CAN::unpack_u16(tx_data, 2);
-    ESP_LOGI(TAG, "One-shot payload words: 0x%04X 0x%04X", first_word, second_word);
-
-    // Schedule a second frame to go out every 100 ms.
-    uint8_t periodic_data[8];
-    MSM_CAN::clear_payload(periodic_data);
-    MSM_CAN::pack_u16(periodic_data, 0, 0xAA55);
-    MSM_CAN::pack_u16(periodic_data, 2, 0x0102);
-    MSM_CAN::schedule(0x501, periodic_data, 100);
+    MSM_CAN::TxFrame periodic = make_word_frame(PERIODIC_TX_ID, 0xAA55, 0x0102);
+    ESP_ERROR_CHECK(MSM_CAN::schedule(periodic, 100));
 
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // Update the scheduled payload without changing its period.
-    MSM_CAN::clear_payload(periodic_data);
-    MSM_CAN::pack_u16(periodic_data, 0, 0xCC33);
-    MSM_CAN::pack_u16(periodic_data, 2, 0x0405);
-    MSM_CAN::update_scheduled_payload(0x501, periodic_data);
+    periodic = make_word_frame(PERIODIC_TX_ID, 0xCC33, 0x0405);
+    ESP_ERROR_CHECK(MSM_CAN::update_scheduled_payload(periodic));
 
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    uint8_t cached_data[8];
-    uint32_t cached_timestamp = 0;
-    if (MSM_CAN::get(0x200, cached_data, &cached_timestamp) == ESP_OK)
-    {
-        ESP_LOGI(TAG,
-                 "Cached RX for 0x200: value=%u timestamp=%lu",
-                 static_cast<unsigned>(MSM_CAN::unpack_u16(cached_data, 0)),
-                 static_cast<unsigned long>(cached_timestamp));
-    }
-
-    // Stop the periodic transmit.
-    MSM_CAN::unschedule(0x501);
-
-    // Nothing else is required here. The example has already shown one-shot TX,
-    // scheduled TX, payload updates, un-scheduling, RX subscription, and the
-    // pack/unpack helpers, so we just keep the task alive.
     while (true)
     {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        log_callback_sample_if_available();
+        poll_latest_frame();
+        vTaskDelay(pdMS_TO_TICKS(250));
     }
 }
