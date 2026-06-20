@@ -22,7 +22,6 @@ This library:
 
 - Transmits `TxFrame` values and receives timestamped `RxFrame` values
 - Supports periodic scheduled transmission
-- Enforces TX ID ranges
 - Manages hardware filtering
 - Provides safe callback-based reception
 - Caches the latest received frame per subscribed ID
@@ -42,7 +41,6 @@ The system consists of:
 - A FreeRTOS TX task
 - Mutexes protecting subscription and schedule state
 - Hardware mask filtering via TWAI
-- Strict TX ID range enforcement
 
 The subscription table defaults to 64 entries and the scheduled TX table
 defaults to 32 entries. Projects can override these at compile time before
@@ -207,7 +205,7 @@ MSM_CAN::send_msg(frame);
 
 Transmission rules:
 
-- ID must be within allowed TX ranges
+- ID must be a standard 11-bit CAN identifier
 - Payload must be exactly 8 bytes
 - Encoding is big-endian
 - `send_msg()` blocks until the TX task has completed the transmit request
@@ -219,21 +217,6 @@ MSM_CAN::schedule(frame, 100);                    // send every 100 ms
 MSM_CAN::update_scheduled_payload(frame);         // update payload only
 MSM_CAN::unschedule(frame.id);                    // stop periodic transmit
 ```
-
----
-
-# Transmission Policy
-
-Allowed TX ID ranges (these can be modified in MSM_CAN.cpp, in future an API to edit them will be created):
-
-```
-0x100 - 0x1FF
-0x500 - 0x5FF
-```
-
-This prevents accidental broadcasting into protected bus regions.
-
----
 
 # Hardware Filtering
 

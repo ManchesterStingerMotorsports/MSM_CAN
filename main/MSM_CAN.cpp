@@ -71,11 +71,6 @@ namespace MSM_CAN
     static constexpr uint8_t TX_QUEUE_DEPTH = 8;
     static constexpr uint8_t FAIL_RETRY_CNT = 3;
 
-    static constexpr uint16_t TX_RANGE1_START = 0x100;
-    static constexpr uint16_t TX_RANGE1_END = 0x1FF;
-    static constexpr uint16_t TX_RANGE2_START = 0x500;
-    static constexpr uint16_t TX_RANGE2_END = 0x5FF;
-
     static constexpr uint16_t RX_TASK_STACK = 4096;
     static constexpr uint16_t TX_TASK_STACK = 4096;
 
@@ -107,12 +102,6 @@ namespace MSM_CAN
             idx++;
         }
         return idx;
-    }
-
-    static inline bool is_allowed_tx_id(uint16_t id)
-    {
-        return ((id >= TX_RANGE1_START && id <= TX_RANGE1_END) ||
-                (id >= TX_RANGE2_START && id <= TX_RANGE2_END));
     }
 
     static bool is_allowed_rx_id(uint16_t id)
@@ -764,7 +753,7 @@ namespace MSM_CAN
             return ESP_ERR_INVALID_STATE;
         }
 
-        if (!is_allowed_tx_id(frame.id))
+        if (frame.id > 0x7FFu)
         {
             return ESP_ERR_INVALID_ARG;
         }
