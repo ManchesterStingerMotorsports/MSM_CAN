@@ -75,7 +75,7 @@ namespace MSM_CAN
        
     inline void pack_u16(uint8_t data[8], uint8_t index, uint16_t value)                //helper function to pack uint8_t data[8] with a big-endian encoded uint16_t 
     {
-        if (index > 6) return;
+        if (data == nullptr || index > 6) return;
 
         data[index + 0] = static_cast<uint8_t>((value >> 8) & 0xFF);
         data[index + 1] = static_cast<uint8_t>((value >> 0) & 0xFF);
@@ -89,7 +89,7 @@ namespace MSM_CAN
 
     inline void pack_u32(uint8_t data[8], uint8_t index, uint32_t value)                //helper function to pack uint8_t data[8] with a big-endian encoded uint32_t 
     {
-        if (index > 4) return;
+        if (data == nullptr || index > 4) return;
 
         data[index + 0] = static_cast<uint8_t>((value >> 24) & 0xFF);
         data[index + 1] = static_cast<uint8_t>((value >> 16) & 0xFF);
@@ -99,7 +99,7 @@ namespace MSM_CAN
 
     inline void pack_u8(uint8_t data[8], uint8_t index, uint8_t value)                  // helper function to pack uint8_t data[8] with a uint8_t
     {
-        if (index > 7) return;
+        if (data == nullptr || index > 7) return;
 
         data[index] = value;
     }
@@ -162,7 +162,7 @@ namespace MSM_CAN
 
     inline bool check_flag(const uint8_t data[8], uint8_t byte, uint8_t bit)            // helper function to check flag bits in payload data (bit 0 is LSB)
     {
-        if (byte > 7 || bit > 7) return false;
+        if (data == nullptr || byte > 7 || bit > 7) return false;
 
         return ((data[byte] >> bit) & 0x1u) != 0u;
     }
@@ -181,6 +181,8 @@ namespace MSM_CAN
   
     inline void clear_payload(uint8_t data[8])                                         //clears the data 
     {
+        if (data == nullptr) return;
+
         for (int i = 0; i < 8; i++) data[i] = 0;
     }
 

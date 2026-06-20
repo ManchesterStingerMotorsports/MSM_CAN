@@ -373,6 +373,10 @@ check_flag(data, byte, bit_position);
 clear_payload(data);
 ```
 
+Payload helpers handle invalid inputs consistently: pack helpers and
+`clear_payload()` no-op when passed `nullptr` or an out-of-range index, while
+unpack helpers and `check_flag()` return zero/false.
+
 ---
 
 # Error Handling
