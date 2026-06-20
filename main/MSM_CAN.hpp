@@ -64,6 +64,7 @@ namespace MSM_CAN
     esp_err_t unsubscribe(uint16_t id);
     
     esp_err_t get(uint16_t id, RxFrame& frame);
+    esp_err_t get_and_clear(uint16_t id, RxFrame& frame);
 
     void get_diagnostics(Diagnostics& diagnostics);
     void reset_diagnostics();

@@ -1143,6 +1143,49 @@ namespace MSM_CAN
         return ESP_OK;
     }
 
+    esp_err_t get_and_clear(uint16_t id, RxFrame& frame)
+    {
+        frame.id = 0;
+        clear_payload(frame.data);
+        frame.timestamp_ms = 0;
+
+        if (!g_initialised)
+        {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        if (id > 0x7FFu)
+        {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        if (g_subs_mutex == nullptr)
+        {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        if (xSemaphoreTake(g_subs_mutex, portMAX_DELAY) != pdTRUE)
+        {
+            return ESP_FAIL;
+        }
+
+        const int idx = find_sub_index(id);
+        if (idx < 0 || !g_subs[idx].has_last_frame)
+        {
+            xSemaphoreGive(g_subs_mutex);
+            return ESP_ERR_NOT_FOUND;
+        }
+
+        copy_rx_frame(frame, g_subs[idx].last_frame);
+        g_subs[idx].has_last_frame = false;
+        g_subs[idx].last_frame.id = 0;
+        clear_payload(g_subs[idx].last_frame.data);
+        g_subs[idx].last_frame.timestamp_ms = 0;
+
+        xSemaphoreGive(g_subs_mutex);
+        return ESP_OK;
+    }
+
     void get_diagnostics(Diagnostics& diagnostics)
     {
         portENTER_CRITICAL(&g_diag_mux);

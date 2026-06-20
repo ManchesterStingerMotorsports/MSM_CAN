@@ -194,6 +194,22 @@ available. It returns `ESP_ERR_INVALID_STATE` when the driver is not initialised
 not subscribed or no frame has been received yet.
 
 The frame data is copied out of the internal cache before `get()` returns.
+Calling `get()` repeatedly returns the same cached frame until a newer frame
+arrives.
+
+For edge-style polling, use `get_and_clear()` to consume a cached frame once:
+
+```cpp
+MSM_CAN::RxFrame frame = {};
+if (MSM_CAN::get_and_clear(0x200, frame) == ESP_OK)
+{
+    uint16_t value = MSM_CAN::unpack_u16(frame.data, 0);
+}
+```
+
+`get_and_clear()` copies the cached frame and clears that subscribed ID's cached
+state while holding the subscription mutex. It returns the same error values as
+`get()`.
 
 ---
 
@@ -300,6 +316,7 @@ Protected operations:
 - `subscribe()`
 - `unsubscribe()`
 - `get()`
+- `get_and_clear()`
 - `schedule()`
 - `update_scheduled_payload()`
 - `unschedule()`
