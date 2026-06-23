@@ -1016,7 +1016,7 @@ namespace MSM_CAN
             return ESP_ERR_INVALID_ARG;
         }
 
-        if (type == TxCmdType::Schedule && period_ms == 0)
+        if (type == TxCmdType::Schedule && (period_ms == 0 || period_ms > INT32_MAX))
         {
             return ESP_ERR_INVALID_ARG;
         }

@@ -68,6 +68,7 @@ namespace MSM_CAN
    
     // Schedule a frame to be sent periodically by the background TX task.
     // Re-scheduling the same ID updates its payload/period and restarts its timing.
+    // period_ms must be in [1, INT32_MAX]; otherwise returns ESP_ERR_INVALID_ARG.
     esp_err_t schedule(const TxFrame& frame, uint32_t period_ms);
     
     // Update only the stored payload for a scheduled ID.
@@ -79,6 +80,7 @@ namespace MSM_CAN
 
 
     esp_err_t subscribe(uint16_t id, RxCallback callback = nullptr);
+    // Does not wait for an already selected/running callback to finish.
     esp_err_t unsubscribe(uint16_t id);
     
     esp_err_t get(uint16_t id, RxFrame& frame);

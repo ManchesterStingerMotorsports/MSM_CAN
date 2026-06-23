@@ -251,6 +251,10 @@ MSM_CAN::update_scheduled_payload(frame);         // update payload only
 MSM_CAN::unschedule(frame.id);                    // stop periodic transmit
 ```
 
+Scheduling periods must be between 1 and `INT32_MAX` milliseconds (inclusive).
+Zero and larger values return `ESP_ERR_INVALID_ARG`. The upper limit keeps the
+signed deadline comparison valid across the 32-bit millisecond clock wrap.
+
 ---
 
 ## 5. Read Diagnostics
@@ -362,11 +366,11 @@ Protected operations:
 
 The mutex is never held while executing user callbacks.
 
-This prevents:
-
-- Use-after-unsubscribe
-- Partial entry reads
-- Slot reuse race conditions
+The mutex prevents partial reads and concurrent modification of table entries.
+`unsubscribe()` removes the subscription and cached frame, but does not wait for
+callbacks: a callback already selected by the RX task may still start or finish
+after `unsubscribe()` returns. Keep any state used by that callback alive until
+the application has separately ensured it can no longer be accessed.
 
 ---
 
