@@ -4,6 +4,8 @@
 #include <string.h>
 #include <sys/param.h>
 #include <algorithm>
+#include <atomic>
+#include <new>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
@@ -24,6 +26,7 @@ namespace MSM_CAN
     {
         uint16_t id;
         uint8_t data[8];
+        uint32_t timestamp_ms;
     };
 
     struct SubEntry
@@ -49,6 +52,16 @@ namespace MSM_CAN
         Schedule,
         Unschedule,
         UpdatePayload,
+        Recover,
+    };
+
+    // Caller and TX task each own a reference, so a caller timeout is safe.
+    struct TxCompletion
+    {
+        std::atomic<unsigned> owners{2};
+        std::atomic<bool> abandoned{false};
+        SemaphoreHandle_t done_sem = nullptr;
+        esp_err_t result = ESP_FAIL;
     };
 
     struct TxCmd
@@ -57,10 +70,8 @@ namespace MSM_CAN
         TxFrame frame;
         uint32_t period_ms;
 
-        // Public APIs wait on this so they can return the final result
-        // after the TX task has processed the request.
-        SemaphoreHandle_t done_sem;
-        esp_err_t *result_ptr;
+        TxCompletion *completion;
+        uint32_t deadline_ms;
     };
 
     static constexpr size_t RX_QUEUE_DEPTH = 32;
@@ -68,6 +79,7 @@ namespace MSM_CAN
 
     static constexpr uint32_t TX_TIMEOUT_MS = 10;
     static constexpr uint32_t TX_CMD_QUEUE_WAIT_MS = 50;
+    static constexpr uint32_t TX_CMD_COMPLETION_WAIT_MS = 100;
     static constexpr uint32_t BITRATE = 1000000;
     static constexpr uint8_t TX_QUEUE_DEPTH = 8;
     static constexpr uint8_t FAIL_RETRY_CNT = 3;
@@ -92,15 +104,20 @@ namespace MSM_CAN
     static twai_node_handle_t g_node = nullptr;
     static bool g_node_enabled = false;
 
+    // Only the TX task writes these. Never reuse storage while TWAI owns it.
+    static uint8_t g_tx_buf[8];
+    static twai_frame_t g_tx_frame = {};
+    static std::atomic<esp_err_t> g_tx_result{ESP_FAIL};
+
     static portMUX_TYPE g_diag_mux = portMUX_INITIALIZER_UNLOCKED;
     static Diagnostics g_diag = {};
 
-    static twai_mask_filter_config_t s_filter_cfg =
-        {
-            .id = 0xFFFFFFFFu,
-            .mask = 0xFFFFFFFFu,
-            .is_ext = false,
-    };
+    static twai_mask_filter_config_t s_filter_cfg = [] {
+        twai_mask_filter_config_t cfg{};
+        cfg.id = 0xFFFFFFFFu;
+        cfg.mask = 0xFFFFFFFFu;
+        return cfg;
+    }();
 
     static uint32_t highest_set_bit_index_u32(uint32_t x)
     {
@@ -121,6 +138,8 @@ namespace MSM_CAN
         g_diag.scheduled_sends = 0;
         g_diag.last_tx_error = ESP_OK;
         g_diag.last_rx_error = ESP_OK;
+        g_diag.bus_off_events = 0;
+        g_diag.bus_errors = 0;
         portEXIT_CRITICAL(&g_diag_mux);
     }
 
@@ -368,34 +387,73 @@ namespace MSM_CAN
             return ESP_ERR_INVALID_STATE;
         }
 
-        uint8_t tx_buf[8];
-        copy_payload(tx_buf, tx_frame.data);
-
-        twai_frame_t frame = {};
-        frame.header.id = tx_frame.id;
-        frame.buffer = tx_buf;
-        frame.buffer_len = 8;
-
-        esp_err_t err = twai_node_transmit(g_node, &frame, TX_TIMEOUT_MS);
+        // A previous call may have timed out with a frame still in flight.
+        esp_err_t err = twai_node_transmit_wait_all_done(g_node, 0);
         if (err != ESP_OK)
         {
             return err;
         }
 
-        return twai_node_transmit_wait_all_done(g_node, TX_TIMEOUT_MS);
+        copy_payload(g_tx_buf, tx_frame.data);
+        g_tx_frame = {};
+        g_tx_frame.header.id = tx_frame.id;
+        g_tx_frame.header.dlc = 8;
+        g_tx_frame.buffer = g_tx_buf;
+        g_tx_frame.buffer_len = 8;
+        g_tx_result.store(ESP_FAIL);
+
+        err = twai_node_transmit(g_node, &g_tx_frame, TX_TIMEOUT_MS);
+        if (err != ESP_OK)
+        {
+            return err;
+        }
+
+        err = twai_node_transmit_wait_all_done(g_node, TX_TIMEOUT_MS);
+        return err == ESP_OK ? g_tx_result.load() : err;
+    }
+
+    static void release_completion(TxCompletion *completion)
+    {
+        if (completion->owners.fetch_sub(1) == 1)
+        {
+            vSemaphoreDelete(completion->done_sem);
+            delete completion;
+        }
     }
 
     static void complete_tx_cmd(TxCmd &cmd, esp_err_t result)
     {
-        if (cmd.result_ptr != nullptr)
-        {
-            *(cmd.result_ptr) = result;
-        }
+        cmd.completion->result = result;
+        xSemaphoreGive(cmd.completion->done_sem);
+        release_completion(cmd.completion);
+    }
 
-        if (cmd.done_sem != nullptr)
+    static bool on_tx_done_cb(twai_node_handle_t,
+                              const twai_tx_done_event_data_t *edata, void *)
+    {
+        g_tx_result.store(edata->is_tx_success ? ESP_OK : ESP_FAIL);
+        return false;
+    }
+
+    static bool on_state_change_cb(twai_node_handle_t,
+                                   const twai_state_change_event_data_t *edata, void *)
+    {
+        if (edata->new_sta == TWAI_ERROR_BUS_OFF)
         {
-            xSemaphoreGive(cmd.done_sem);
+            portENTER_CRITICAL_ISR(&g_diag_mux);
+            g_diag.bus_off_events++;
+            g_diag.last_tx_error = ESP_ERR_INVALID_STATE;
+            portEXIT_CRITICAL_ISR(&g_diag_mux);
         }
+        return false;
+    }
+
+    static bool on_error_cb(twai_node_handle_t, const twai_error_event_data_t *, void *)
+    {
+        portENTER_CRITICAL_ISR(&g_diag_mux);
+        g_diag.bus_errors++;
+        portEXIT_CRITICAL_ISR(&g_diag_mux);
+        return false;
     }
 
     static bool on_rx_done_cb(twai_node_handle_t handle,
@@ -405,11 +463,12 @@ namespace MSM_CAN
         (void)edata;
         (void)user_ctx;
 
+        const uint32_t received_ms = now_ms();
+
         uint8_t buf[8];
-        twai_frame_t rx_frame = {
-            .buffer = buf,
-            .buffer_len = sizeof(buf),
-        };
+        twai_frame_t rx_frame{};
+        rx_frame.buffer = buf;
+        rx_frame.buffer_len = sizeof(buf);
 
         const esp_err_t err = twai_node_receive_from_isr(handle, &rx_frame);
         if (err != ESP_OK)
@@ -418,18 +477,19 @@ namespace MSM_CAN
             return false;
         }
 
-        if (rx_frame.header.ide)
+        if (rx_frame.header.ide || rx_frame.header.rtr || rx_frame.header.fdf)
         {
             diag_note_ignored_frame_from_isr(ESP_ERR_INVALID_ARG);
             return false;
         }
-        if (rx_frame.buffer_len != 8 || rx_frame.buffer == nullptr)
+        if (rx_frame.header.dlc != 8 || rx_frame.buffer == nullptr)
         {
             diag_note_ignored_frame_from_isr(ESP_ERR_INVALID_SIZE);
             return false;
         }
 
         RxQueueItem pkt{};
+        pkt.timestamp_ms = received_ms;
         pkt.id = static_cast<uint16_t>(rx_frame.header.id & 0x7FFu);
         for (int i = 0; i < 8; i++)
         {
@@ -473,7 +533,7 @@ namespace MSM_CAN
             RxFrame frame{};
             frame.id = pkt.id;
             copy_payload(frame.data, pkt.data);
-            frame.timestamp_ms = now_ms();
+            frame.timestamp_ms = pkt.timestamp_ms;
 
             RxCallback cb = nullptr;
 
@@ -594,10 +654,20 @@ namespace MSM_CAN
 
     static void handle_tx_cmd(TxCmd &cmd)
     {
+        if (cmd.completion->abandoned.load() || time_reached(now_ms(), cmd.deadline_ms))
+        {
+            complete_tx_cmd(cmd, ESP_ERR_TIMEOUT);
+            return;
+        }
         esp_err_t result = ESP_OK;
 
         switch (cmd.type)
         {
+        case TxCmdType::Recover:
+        {
+            result = twai_node_recover(g_node);
+            break;
+        }
         case TxCmdType::SendNow:
         {
             result = transmit_frame_blocking(cmd.frame);
@@ -838,19 +908,14 @@ namespace MSM_CAN
         clear_subscriptions();
         clear_scheduled_entries();
 
-        twai_onchip_node_config_t node_config = {
-            .io_cfg = {
-                .tx = tx_gpio,
-                .rx = rx_gpio,
-                .quanta_clk_out = (gpio_num_t)-1,
-                .bus_off_indicator = (gpio_num_t)-1,
-            },
-            .bit_timing = {
-                .bitrate = BITRATE,
-            },
-            .fail_retry_cnt = FAIL_RETRY_CNT,
-            .tx_queue_depth = TX_QUEUE_DEPTH,
-        };
+        twai_onchip_node_config_t node_config{};
+        node_config.io_cfg.tx = tx_gpio;
+        node_config.io_cfg.rx = rx_gpio;
+        node_config.io_cfg.quanta_clk_out = (gpio_num_t)-1;
+        node_config.io_cfg.bus_off_indicator = (gpio_num_t)-1;
+        node_config.bit_timing.bitrate = BITRATE;
+        node_config.fail_retry_cnt = FAIL_RETRY_CNT;
+        node_config.tx_queue_depth = TX_QUEUE_DEPTH;
 
         esp_err_t err = twai_new_node_onchip(&node_config, &g_node);
         if (err != ESP_OK)
@@ -881,7 +946,10 @@ namespace MSM_CAN
         }
 
         twai_event_callbacks_t cbs = {
+            .on_tx_done = on_tx_done_cb,
             .on_rx_done = on_rx_done_cb,
+            .on_state_change = on_state_change_cb,
+            .on_error = on_error_cb,
         };
         err = twai_node_register_event_callbacks(g_node, &cbs, nullptr);
         if (err != ESP_OK)
@@ -958,37 +1026,74 @@ namespace MSM_CAN
             return ESP_ERR_INVALID_STATE;
         }
 
-        SemaphoreHandle_t done_sem = xSemaphoreCreateBinary();
-        if (done_sem == nullptr)
+        auto *completion = new (std::nothrow) TxCompletion;
+        if (completion == nullptr)
         {
             return ESP_ERR_NO_MEM;
         }
-
-        esp_err_t result = ESP_FAIL;
+        completion->done_sem = xSemaphoreCreateBinary();
+        if (completion->done_sem == nullptr)
+        {
+            delete completion;
+            return ESP_ERR_NO_MEM;
+        }
 
         TxCmd cmd{};
         cmd.type = type;
         copy_tx_frame(cmd.frame, frame);
         cmd.period_ms = period_ms;
-        cmd.done_sem = done_sem;
-        cmd.result_ptr = &result;
+        cmd.completion = completion;
+        cmd.deadline_ms = now_ms() + TX_CMD_QUEUE_WAIT_MS + TX_CMD_COMPLETION_WAIT_MS;
 
         if (xQueueSend(g_tx_cmd_queue, &cmd, pdMS_TO_TICKS(TX_CMD_QUEUE_WAIT_MS)) != pdTRUE)
         {
-            vSemaphoreDelete(done_sem);
+            release_completion(completion);
+            release_completion(completion);
             diag_note_tx_failure(ESP_ERR_TIMEOUT);
             return ESP_ERR_TIMEOUT;
         }
 
-        (void)xSemaphoreTake(done_sem, portMAX_DELAY);
-
-        vSemaphoreDelete(done_sem);
+        esp_err_t result = ESP_ERR_TIMEOUT;
+        if (xSemaphoreTake(completion->done_sem, pdMS_TO_TICKS(TX_CMD_COMPLETION_WAIT_MS)) == pdTRUE)
+        {
+            result = completion->result;
+        }
+        else
+        {
+            completion->abandoned.store(true);
+            diag_note_tx_failure(ESP_ERR_TIMEOUT);
+        }
+        release_completion(completion);
         return result;
     }
 
     esp_err_t send_msg(const TxFrame& frame)
     {
         return submit_tx_cmd_and_wait(TxCmdType::SendNow, frame, 0);
+    }
+
+    esp_err_t get_bus_status(BusStatus& status)
+    {
+        status = {};
+        if (!g_initialised) return ESP_ERR_INVALID_STATE;
+        twai_node_status_t info{};
+        const esp_err_t err = twai_node_get_info(g_node, &info, nullptr);
+        if (err != ESP_OK) return err;
+        switch (info.state)
+        {
+        case TWAI_ERROR_ACTIVE: status.state = BusState::Active; break;
+        case TWAI_ERROR_WARNING: status.state = BusState::Warning; break;
+        case TWAI_ERROR_PASSIVE: status.state = BusState::Passive; break;
+        default: status.state = BusState::BusOff; break;
+        }
+        status.tx_error_count = info.tx_error_count;
+        status.rx_error_count = info.rx_error_count;
+        return ESP_OK;
+    }
+
+    esp_err_t recover()
+    {
+        return submit_tx_cmd_and_wait(TxCmdType::Recover, TxFrame{}, 0);
     }
 
     esp_err_t schedule(const TxFrame& frame, uint32_t period_ms)

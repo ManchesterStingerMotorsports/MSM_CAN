@@ -26,6 +26,7 @@ namespace MSM_CAN
     {
         uint16_t id;
         uint8_t data[8];
+        // Receive ISR time in milliseconds since boot, wrapping at 32 bits.
         uint32_t timestamp_ms;
     };
 
@@ -37,6 +38,17 @@ namespace MSM_CAN
         uint32_t scheduled_sends;
         esp_err_t last_tx_error;
         esp_err_t last_rx_error;
+        uint32_t bus_off_events;
+        uint32_t bus_errors;
+    };
+
+    enum class BusState : uint8_t { Unknown, Active, Warning, Passive, BusOff };
+
+    struct BusStatus
+    {
+        BusState state;
+        uint16_t tx_error_count;
+        uint16_t rx_error_count;
     };
 
     using RxCallback = void (*)(const RxFrame& frame);
@@ -44,8 +56,14 @@ namespace MSM_CAN
     esp_err_t init(gpio_num_t rx_gpio, gpio_num_t tx_gpio);  
 
     // Queue a one-shot transmit and wait for the TX task to report the result.
-    // This remains a blocking API from the caller's point of view.
+    // Bounded waits: 50 ms queue admission + 100 ms completion (plus task scheduling).
+    // A timeout does not cancel a transmission already submitted to TWAI.
     esp_err_t send_msg(const TxFrame& frame);
+
+    esp_err_t get_bus_status(BusStatus& status);
+    // Start asynchronous bus-off recovery; poll get_bus_status() for completion.
+    // Pending driver traffic may resume; scheduled entries are retained.
+    esp_err_t recover();
 
    
     // Schedule a frame to be sent periodically by the background TX task.

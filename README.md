@@ -95,6 +95,8 @@ timestamp.
 
 `RxFrame` is used for anything the driver receives. It contains the CAN
 identifier, a copied 8-byte payload, and the driver timestamp in milliseconds.
+The timestamp is captured in the receive ISR and preserved through the RX queue;
+it is not the time at which the application reads the frame. It wraps at 32 bits.
 
 Both frame types use standard 11-bit CAN IDs. The `data` field is always exactly
 8 bytes, matching this library's fixed DLC policy. The packing and unpacking
@@ -228,7 +230,18 @@ Transmission rules:
 - ID must be a standard 11-bit CAN identifier
 - Payload must be exactly 8 bytes
 - Encoding is big-endian
-- `send_msg()` blocks until the TX task has completed the transmit request
+- `send_msg()` blocks until the TX task reports the result or the caller times out
+
+TX commands (`send_msg`, `schedule`, `update_scheduled_payload`, `unschedule`,
+and `recover`) wait at most 50 ms for queue space and 100 ms for completion,
+subject to FreeRTOS tick resolution and task scheduling. An expired command that
+has not started is discarded. A command already executing may finish after the
+caller times out; a timeout is not cancellation or proof that a frame was not sent.
+Do not blindly retry commands whose outcome is uncertain.
+
+The driver retains TX frame storage until TWAI is idle. While an earlier transfer
+is pending, new sends fail instead of overwriting its data. A completed but failed
+transmission returns `ESP_FAIL`; completion alone does not imply delivery success.
 
 Periodic transmit helpers:
 
@@ -267,6 +280,29 @@ Diagnostics fields:
 - `scheduled_sends` counts successful sends performed by the scheduled-TX task.
 - `last_tx_error` stores the most recent non-`ESP_OK` TX error.
 - `last_rx_error` stores the most recent non-`ESP_OK` RX error.
+- `bus_off_events` counts transitions into bus-off.
+- `bus_errors` counts TWAI bus error events.
+
+Read current controller state and error counters with `get_bus_status()`:
+
+```cpp
+MSM_CAN::BusStatus status{};
+if (MSM_CAN::get_bus_status(status) == ESP_OK &&
+    status.state == MSM_CAN::BusState::BusOff)
+{
+    // When the application is ready, call MSM_CAN::recover() once.
+    // ESP_OK means recovery started; poll status for completion.
+}
+```
+
+States are `Unknown`, `Active`, `Warning`, `Passive`, and `BusOff`.
+Recovery is explicit and asynchronous; the bus must meet TWAI's recovery
+conditions before communication resumes. Do not repeatedly restart recovery
+while waiting. Scheduled entries remain installed and resume when the bus is
+available. Driver-owned pending traffic may also resume, depending on the
+ESP-IDF version. A timeout or recovery does not guarantee cancellation of old
+traffic. Frame freshness and vehicle safety actions remain application concerns.
+`reset_diagnostics()` clears counters, not controller state.
 
 # Hardware Filtering
 
@@ -293,12 +329,12 @@ The software subscription table ensures only explicitly subscribed IDs trigger c
 
 RX task behaviour:
 
-- Blocks on `twai_node_receive`
+- Receives frames in the TWAI ISR and queues them for the RX task
 - Rejects extended IDs
-- Rejects non-8-byte frames
+- Rejects remote frames, FD frames, and received DLC values other than 8
 - Copies payload to local buffer
 - Locks subscription table
-- Updates cached frame/timestamp for the matching subscribed ID
+- Updates the cached frame, preserving its ISR timestamp, for the subscribed ID
 - Copies callback pointer
 - Unlocks
 - Executes callback outside the lock if one was provided
@@ -404,5 +440,4 @@ ESP_ERROR_CHECK(...)
 - DLC must be 8
 - Hardware filters must be configured before init
 - RX callbacks must be fast and non-blocking
-
 
